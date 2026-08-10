@@ -58,18 +58,103 @@ export interface SyncSummary {
 }
 
 /**
- * The one-line result every trigger surface shows — the admin button, the
- * plugin, and the API response. Shared so the wording cannot drift between them.
+ * The result every trigger surface shows — the admin button, the plugin, and
+ * the API response. Shared so the wording cannot drift between them.
+ *
+ * Written for the designer who just pressed Publish rather than for whoever
+ * wrote the sync: each sentence says what is true of the site now, in the order
+ * someone actually cares about it — what got published, what changed, what
+ * disappeared, what needs review — with the request count last because it only
+ * matters when debugging the rate limit. It renders into a plain `<p>` on the
+ * admin page, so it has to read as prose; no counters-and-dots table.
  */
 export function formatSyncSummary(summary: SyncSummary): string {
-  return [
-    `${summary.flowsSynced} flow(s) synced`,
-    `${summary.flowsSkipped} unchanged`,
-    `${summary.screensRendered} screen(s)`,
-    `${summary.blobWrites} image write(s)`,
-    `${summary.driftFlagged} drift flag(s)`,
-    `${summary.requestCount} Figma request(s)`,
-  ].join(" · ");
+  const parts: string[] = [];
+
+  if (summary.flowsSynced === 0) {
+    parts.push(nothingPublished(summary));
+  } else {
+    parts.push(published(summary));
+    // Nothing was rendered, so there is no image story to tell — `published`
+    // has already explained why.
+    if (summary.screensRendered > 0) parts.push(images(summary));
+  }
+
+  if (summary.screensArchived > 0) {
+    parts.push(
+      `${plural(summary.screensArchived, "screen")} no longer in Figma, ` +
+        `now hidden from the site.`,
+    );
+  }
+
+  parts.push(
+    summary.driftFlagged === 0
+      ? "Nothing has drifted from its source design."
+      : `${plural(summary.driftFlagged, "screen")} no longer match the source ` +
+        `design they were copied from — flagged for review.`,
+  );
+
+  if (summary.errors.length > 0) {
+    parts.push(
+      `${plural(summary.errors.length, "problem")} along the way: ${summary.errors.join("; ")}.`,
+    );
+  }
+
+  parts.push(`${plural(summary.requestCount, "Figma API request")} used.`);
+
+  return parts.filter(Boolean).join(" ");
+}
+
+function nothingPublished(summary: SyncSummary): string {
+  if (summary.flowsChecked === 0) {
+    return "Nothing to publish — no Figma files matched.";
+  }
+  return summary.flowsChecked === 1
+    ? "Nothing to publish — this file has not changed in Figma since it was last published."
+    : `Nothing to publish — none of the ${summary.flowsChecked} files have changed in Figma since they were last published.`;
+}
+
+function published(summary: SyncSummary): string {
+  const scope =
+    summary.flowsSynced === 1 ? "" : ` from ${summary.flowsSynced} files`;
+
+  if (summary.screensRendered === 0) {
+    return (
+      `Published${scope}, but found no frames to document. ` +
+      `Frames are skipped when their name matches the ignore prefix.`
+    );
+  }
+
+  const also =
+    summary.flowsSkipped > 0
+      ? ` ${plural(summary.flowsSkipped, "other file")} had not changed and ` +
+        `${summary.flowsSkipped === 1 ? "was" : "were"} left alone.`
+      : "";
+
+  return `${plural(summary.screensRendered, "screen")} published${scope}.${also}`;
+}
+
+/**
+ * Renders are compared by hash before upload, so most screens in a re-publish
+ * cost nothing. Saying so is what stops "0 image writes" reading like a failure.
+ */
+function images(summary: SyncSummary): string {
+  const identical = Math.max(0, summary.screensRendered - summary.blobWrites);
+
+  if (summary.blobWrites === 0) {
+    return "Every image was already identical, so none were re-uploaded.";
+  }
+  if (identical === 0) {
+    return `${plural(summary.blobWrites, "image")} uploaded.`;
+  }
+  return (
+    `${plural(summary.blobWrites, "image")} changed and ${summary.blobWrites === 1 ? "was" : "were"} ` +
+    `re-uploaded; the other ${identical} were identical.`
+  );
+}
+
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
 export interface FlowPreview {

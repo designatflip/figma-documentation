@@ -45,16 +45,12 @@ export async function runSyncAction(): Promise<SyncActionResult> {
     // which is why the cron Route Handler cannot use it.
     updateTag("catalog");
 
-    const message = formatSyncSummary(summary);
-
-    if (summary.errors.length > 0) {
-      return {
-        ok: false,
-        message: `${message}. Errors: ${summary.errors.join("; ")}`,
-      };
-    }
-
-    return { ok: true, message };
+    // `formatSyncSummary` already spells the errors out, so this only decides
+    // which colour the admin page paints them.
+    return {
+      ok: summary.errors.length === 0,
+      message: formatSyncSummary(summary),
+    };
   } catch (error) {
     if (error instanceof SyncBusyError) {
       return { ok: false, message: error.message };

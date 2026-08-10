@@ -363,7 +363,10 @@
       }
 
       if (!response.ok || body.ok === false) {
-        setResult("result", body.error || "Publish failed.", true);
+        // A partial failure still returns 200 with a full summary and no
+        // `error` — that summary names the files that failed, so it is a far
+        // better thing to show than "Publish failed."
+        setResult("result", body.error || body.message || "Publish failed.", true);
         return;
       }
 
