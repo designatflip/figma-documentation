@@ -2,6 +2,8 @@ import { connection } from "next/server";
 import { Suspense } from "react";
 
 import { getAdminStatus } from "@/lib/queries";
+import { listPluginTokens } from "@/lib/plugin-auth";
+import { RevokeButton } from "./revoke-button";
 import { SyncButton } from "./sync-button";
 
 export default function AdminPage() {
@@ -23,7 +25,75 @@ export default function AdminPage() {
       <Suspense fallback={<p className="text-sm text-muted">Loading status…</p>}>
         <StatusTable />
       </Suspense>
+
+      <header className="mt-12 mb-4">
+        <h2 className="text-lg font-semibold tracking-tight">Figma plugins</h2>
+        <p className="mt-1 max-w-prose text-sm text-muted">
+          Each row is one person who connected the publish plugin. Revoking
+          takes effect on their next publish.
+        </p>
+      </header>
+
+      <Suspense fallback={<p className="text-sm text-muted">Loading…</p>}>
+        <PluginTokenTable />
+      </Suspense>
     </>
+  );
+}
+
+async function PluginTokenTable() {
+  await connection();
+  const tokens = await listPluginTokens();
+
+  if (tokens.length === 0) {
+    return (
+      <p className="text-sm text-muted">
+        Nobody has connected the plugin yet. See SETUP.md for how to install it.
+      </p>
+    );
+  }
+
+  return (
+    <div className="overflow-x-auto rounded-lg border border-border">
+      <table className="w-full min-w-[40rem] text-left text-sm">
+        <thead className="bg-surface-muted text-xs uppercase tracking-wide text-muted">
+          <tr>
+            <th className="px-4 py-3 font-medium">Person</th>
+            <th className="px-4 py-3 font-medium">Connected</th>
+            <th className="px-4 py-3 font-medium">Last published</th>
+            <th className="px-4 py-3 font-medium" />
+          </tr>
+        </thead>
+        <tbody>
+          {tokens.map((token) => (
+            <tr key={token.id} className="border-t border-border align-top">
+              <td className="px-4 py-3">
+                <span className={token.revokedAt ? "text-muted" : ""}>
+                  {token.email}
+                </span>
+                {token.revokedAt && (
+                  <span className="ml-2 text-xs text-muted">(revoked)</span>
+                )}
+                {!token.revokedAt && !token.pairedAt && (
+                  <span className="ml-2 text-xs text-muted">
+                    (pairing not completed)
+                  </span>
+                )}
+              </td>
+              <td className="px-4 py-3 text-muted">
+                {token.pairedAt?.toLocaleString() ?? "—"}
+              </td>
+              <td className="px-4 py-3 text-muted">
+                {token.lastUsedAt?.toLocaleString() ?? "never"}
+              </td>
+              <td className="px-4 py-3">
+                {!token.revokedAt && <RevokeButton id={token.id} />}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

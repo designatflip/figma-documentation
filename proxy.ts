@@ -11,7 +11,13 @@ import { checkSessionAccess, logMissingClaim } from "@/lib/auth";
  * Routes that carry their own authentication, or none:
  *
  * - `/api/sync` and `/api/webhooks/*` authenticate inside the handler
- *   (`CRON_SECRET` and a Svix signature). Neither caller can present a session.
+ *   (`CRON_SECRET`, a plugin token, and a Svix signature). None of those callers
+ *   can present a session.
+ * - `/api/plugin/claim` is how a Figma plugin collects the token it will then
+ *   authenticate with, so by definition it has nothing to present yet. It is
+ *   guarded by a single-use 256-bit nonce instead — see `lib/plugin-auth.ts`.
+ *   Note that `/plugin/pair`, which *mints* that token, is deliberately NOT
+ *   here: it must sit behind Clerk, because the session is the whole boundary.
  * - `/sign-in`, `/sign-up` and `/not-authorized` must stay reachable signed out,
  *   or the redirect below loops.
  *
@@ -22,6 +28,7 @@ import { checkSessionAccess, logMissingClaim } from "@/lib/auth";
 function isPublic(pathname: string): boolean {
   return (
     pathname === "/api/sync" ||
+    pathname === "/api/plugin/claim" ||
     pathname === "/not-authorized" ||
     pathname.startsWith("/api/webhooks/") ||
     pathname.startsWith("/sign-in") ||

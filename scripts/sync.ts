@@ -13,6 +13,7 @@
 import { syncProject } from "@/lib/figma/sync";
 import { FigmaClient } from "@/lib/figma/client";
 import { figmaEnv } from "@/lib/env";
+import { SyncBusyError, withSyncLock } from "@/lib/sync-lock";
 
 function arg(name: string): string | undefined {
   const index = process.argv.indexOf(`--${name}`);
@@ -68,14 +69,21 @@ async function main() {
   const dryRun = has("dry-run");
   const started = Date.now();
 
-  const summary = await syncProject({
-    dryRun,
-    force: has("force"),
-    allowMassArchive: has("allow-mass-archive"),
-    skipDrift: has("skip-drift"),
-    onlyFileKey: arg("file"),
-    onLog: log,
-  });
+  const run = () =>
+    syncProject({
+      dryRun,
+      force: has("force"),
+      allowMassArchive: has("allow-mass-archive"),
+      skipDrift: has("skip-drift"),
+      onlyFileKey: arg("file"),
+      onLog: log,
+    });
+
+  // A dry run writes nothing, so it has no business blocking — or being blocked
+  // by — a real one. Everything else takes the lease the plugin and cron share.
+  const summary = dryRun
+    ? await run()
+    : await withSyncLock(`cli:${process.env.USER ?? "unknown"}`, run);
 
   if (dryRun) {
     console.log("\n──── DRY RUN — nothing was written ────\n");
@@ -124,7 +132,13 @@ async function main() {
 
 main()
   .catch((error) => {
-    console.error(error);
+    // Expected whenever the cron, a plugin, or another terminal got there
+    // first. A stack trace would suggest something broke.
+    if (error instanceof SyncBusyError) {
+      console.error(`${error.message}\nTry again once it finishes.`);
+    } else {
+      console.error(error);
+    }
     process.exitCode = 1;
   })
   .finally(() => {

@@ -3,8 +3,10 @@
 import { updateTag } from "next/cache";
 import { auth } from "@clerk/nextjs/server";
 
-import { checkSessionAccess, logMissingClaim } from "@/lib/auth";
-import { syncProject } from "@/lib/figma/sync";
+import { checkSessionAccess, logMissingClaim, sessionEmail } from "@/lib/auth";
+import { formatSyncSummary, syncProject } from "@/lib/figma/sync";
+import { revokePluginToken } from "@/lib/plugin-auth";
+import { SyncBusyError, withSyncLock } from "@/lib/sync-lock";
 
 export interface SyncActionResult {
   ok: boolean;
@@ -31,9 +33,11 @@ export async function runSyncAction(): Promise<SyncActionResult> {
   }
 
   try {
-    const summary = await syncProject({
-      onLog: (message) => console.log(`[sync] ${message}`),
-    });
+    const summary = await withSyncLock(sessionEmail(sessionClaims) ?? userId, () =>
+      syncProject({
+        onLog: (message) => console.log(`[sync] ${message}`),
+      }),
+    );
 
     // Read-your-own-writes: someone just clicked "Sync now" and is watching.
     // `updateTag` expires immediately so the next render blocks on fresh data,
@@ -41,27 +45,47 @@ export async function runSyncAction(): Promise<SyncActionResult> {
     // which is why the cron Route Handler cannot use it.
     updateTag("catalog");
 
-    const parts = [
-      `${summary.flowsSynced} flow(s) synced`,
-      `${summary.flowsSkipped} unchanged`,
-      `${summary.screensRendered} screen(s)`,
-      `${summary.blobWrites} image write(s)`,
-      `${summary.driftFlagged} drift flag(s)`,
-      `${summary.requestCount} Figma request(s)`,
-    ];
+    const message = formatSyncSummary(summary);
 
     if (summary.errors.length > 0) {
       return {
         ok: false,
-        message: `${parts.join(" · ")}. Errors: ${summary.errors.join("; ")}`,
+        message: `${message}. Errors: ${summary.errors.join("; ")}`,
       };
     }
 
-    return { ok: true, message: parts.join(" · ") };
+    return { ok: true, message };
   } catch (error) {
+    if (error instanceof SyncBusyError) {
+      return { ok: false, message: error.message };
+    }
     return {
       ok: false,
       message: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+/**
+ * Revoke one paired Figma plugin. Any admin may revoke anyone's token — the
+ * page is already limited to the allowed domain, and a stuck token that only
+ * its owner can clear is worse than a shared kill switch.
+ */
+export async function revokePluginTokenAction(
+  id: string,
+): Promise<SyncActionResult> {
+  const { userId, sessionClaims } = await auth();
+  if (!userId) {
+    return { ok: false, message: "Not signed in." };
+  }
+
+  const access = checkSessionAccess(sessionClaims);
+  if (access === "missing-claim") logMissingClaim("revokePluginTokenAction");
+  if (access !== "allowed") {
+    return { ok: false, message: "Not authorised." };
+  }
+
+  await revokePluginToken(id);
+
+  return { ok: true, message: "Revoked." };
 }
