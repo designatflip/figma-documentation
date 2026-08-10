@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { connection } from "next/server";
 import { Suspense } from "react";
 
-import { DriftBadge } from "@/components/drift-badge";
+import { DriftBadge, hasDriftLabel } from "@/components/drift-badge";
 import { ScreenImage } from "@/components/screen-image";
 import { getScreenById } from "@/lib/queries";
 
@@ -86,40 +86,59 @@ async function ScreenContent({ params, searchParams }: Props) {
             </div>
           )}
 
-          <DriftBadge
-            state={screen.driftState}
-            checkedAt={screen.driftCheckedAt}
-          />
-
-          <div className="flex flex-col gap-2">
-            <a
-              href={screen.figmaUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="rounded-lg bg-accent px-3 py-2 text-center text-sm font-medium text-accent-fg"
-            >
+          {/*
+            Both halves open the same documented frame — only Figma's viewing
+            mode differs — so they are paired rather than stacked as peers.
+            The source design is a different node in a different file and
+            belongs with the drift badge below, not here.
+          */}
+          <div>
+            <h2 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">
               Open in Figma
-            </a>
-            <a
-              href={`${screen.figmaUrl}&m=dev`}
-              target="_blank"
-              rel="noreferrer"
-              className="rounded-lg border border-border px-3 py-2 text-center text-sm font-medium hover:border-accent"
-            >
-              Open in Dev Mode
-            </a>
-            {/* Absent when the docs frame has no Dev Resource attached. */}
-            {screen.sourceUrl && (
+            </h2>
+            <div className="flex overflow-hidden rounded-lg border border-border">
               <a
-                href={screen.sourceUrl}
+                href={screen.figmaUrl}
                 target="_blank"
                 rel="noreferrer"
-                className="rounded-lg border border-border px-3 py-2 text-center text-sm font-medium hover:border-accent"
+                className="flex-1 border-r border-border px-3 py-2 text-center text-sm font-medium hover:bg-surface-muted"
               >
-                View source design
+                Design <span aria-hidden>↗</span>
               </a>
-            )}
+              <a
+                href={`${screen.figmaUrl}&m=dev`}
+                target="_blank"
+                rel="noreferrer"
+                className="flex-1 px-3 py-2 text-center text-sm font-medium hover:bg-surface-muted"
+              >
+                Dev mode <span aria-hidden>↗</span>
+              </a>
+            </div>
           </div>
+
+          {/*
+            `sourceUrl` is absent when the docs frame has no Dev Resource
+            attached, and the badge is absent unless drift was detected —
+            so the whole block collapses rather than leaving a stray gap.
+          */}
+          {(hasDriftLabel(screen.driftState) || screen.sourceUrl) && (
+            <div className="flex flex-col items-start gap-2">
+              <DriftBadge
+                state={screen.driftState}
+                checkedAt={screen.driftCheckedAt}
+              />
+              {screen.sourceUrl && (
+                <a
+                  href={screen.sourceUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-sm text-muted underline underline-offset-4 hover:text-foreground"
+                >
+                  View source design <span aria-hidden>↗</span>
+                </a>
+              )}
+            </div>
+          )}
 
           {screen.textContent && (
             <div>
