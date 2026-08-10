@@ -71,8 +71,9 @@ npx vercel integration add neon
 # Clerk
 npx vercel integration add clerk
 
-# Blob store (public — images sit behind Clerk at the app layer)
-npx vercel blob store add figma-docs
+# Blob store — each upload is written with access: "public"
+# (lib/figma/sync.ts); images sit behind Clerk at the app layer
+npx vercel blob create-store figma-docs
 
 # Pull everything into .env.local
 npx vercel env pull .env.local
@@ -96,17 +97,61 @@ npx vercel env add CRON_SECRET production
 
 ### Clerk configuration
 
-Two things in the Clerk dashboard:
+**The domain allowlist is not available on the free plan.** Clerk gates
+Restrictions → Allowlist behind a paid plan on *production* instances (it is
+free on development instances, so you will see it work locally and then hit
+"Plan upgrade required" for production). The access boundary therefore lives in
+`lib/auth.ts`, not in the dashboard — `proxy.ts`, the admin Server Action, and
+the webhook below all call the same rule.
 
-1. **Restrictions → Allowlist** — add `flip.id` as an allowed email domain.
-   This is the primary access control.
-2. **Sessions → Customize session token** — add:
+Three things in the Clerk dashboard:
+
+1. **Sessions → Customize session token** — add:
    ```json
    { "email": "{{user.primary_email_address}}" }
    ```
-   `proxy.ts` uses this as a second check. It is deliberately fail-open: if the
-   claim is missing the app does not lock everyone out, because the allowlist
-   above is still enforcing the boundary. Configure both.
+   **Required.** `proxy.ts` fails *closed* on this claim: a session without it
+   is refused, and the reason is logged. This is the access control — if you
+   skip this step nobody can sign in, which is the intended failure direction
+   now that no dashboard restriction is backing it up.
+
+2. **Restrictions → Enable restricted mode** — free, and it stops strangers
+   creating accounts at all: sign-ups are disabled, and people get in only by
+   invitation, manual creation, or enterprise SSO. Invite the team from
+   **Users → Invite**. Without this, anyone can create an account; they just
+   land on `/not-authorized` instead of the docs.
+
+   Note this gates account *creation*, not sign-in. Anyone who signed up before
+   you enabled it keeps their account — `proxy.ts` blocks them, but delete them
+   under Users if you want them gone.
+
+3. **Webhooks → Add endpoint** — `https://<your-domain>/api/webhooks/clerk`,
+   subscribed to **`user.created`** only. Copy the endpoint's signing secret
+   into `CLERK_WEBHOOK_SIGNING_SECRET`:
+
+   ```bash
+   npx vercel env add CLERK_WEBHOOK_SIGNING_SECRET production
+   ```
+
+   The handler deletes any account created outside the allowed domain. This is
+   the second lock behind restricted mode, and it is what keeps the Clerk user
+   list equal to the set of people who can actually sign in. Development and
+   production endpoints have **different** secrets.
+
+   To exercise it locally:
+
+   ```bash
+   clerk webhooks listen --token "$(clerk webhooks token)" \
+     --forward-to http://localhost:3000/api/webhooks/clerk
+   ```
+
+   Add the printed relay URL as an endpoint in the dashboard — events do not
+   flow until you do. Then create a user on a non-`flip.id` address and confirm
+   it disappears from **Users** within a few seconds.
+
+If you later move to a paid plan, add `flip.id` to Restrictions → Allowlist as
+well. Nothing in the code changes — the checks become defence in depth rather
+than the boundary.
 
 ---
 
@@ -238,6 +283,70 @@ curl -X POST -H "Authorization: Bearer $CRON_SECRET" \
 curl -X POST https://<your-deployment>/api/sync
 # → 401
 ```
+
+Both checks return the Vercel SSO redirect, not `200`/`401`, if **Deployment
+Protection** is on. Standard Protection exempts custom production domains only —
+a `*.vercel.app` project alias is not one — so it must be off until step 9 lands
+a real domain. Settings → Deployment Protection → Vercel Authentication.
+
+---
+
+## 9. Outstanding: move production off the Clerk development instance
+
+**Production currently serves `figma-documentation-red.vercel.app` on Clerk
+`pk_test_`/`sk_test_` keys** (instance `well-snipe-77`). Everything works, but
+development instances carry strict usage limits and are not meant for real
+traffic. This section is the remaining work, blocked only on DNS.
+
+Neither plan is the constraint: Clerk's free tier includes custom domains and
+production instances (50,000 MRU/app), and the Vercel team is on Pro. Clerk
+requires a domain *you own* on every plan, which is why the `.vercel.app` alias
+cannot be used. `flip.id` resolves via **Cloudflare** nameservers, so every
+record below is added there, not in Vercel.
+
+1. **Pick a subdomain** — e.g. `design-docs.flip.id`.
+
+2. **Vercel** — add it to the project. Vercel issues a CNAME target
+   (`cname.vercel-dns.com`).
+
+3. **Clerk** — create the Production instance on that same subdomain. Its
+   Domains page issues a `clerk.` CNAME, an accounts CNAME, and DKIM/mail
+   records if you use Clerk-sent email.
+
+4. **Cloudflare** — add all of the above as **DNS only (grey cloud)**. Proxying
+   breaks Vercel certificate issuance *and* Clerk certificate deployment. This
+   is the failure people hit; it looks like a propagation delay and never
+   resolves.
+
+5. **Clerk → Deploy certificates.** Up to 48h to propagate, usually minutes.
+
+6. **Sessions → Customize session token on the Production instance** — add
+   `{ "email": "{{user.primary_email_address}}" }`. Per-instance config, and
+   `proxy.ts` fails closed without it, so skipping this locks everyone out.
+   See §2, step 1.
+
+7. **Swap the keys and re-point the webhook:**
+
+   ```bash
+   npx vercel env rm  NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY production
+   npx vercel env add NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY production   # pk_live_…
+   npx vercel env rm  CLERK_SECRET_KEY production
+   npx vercel env add CLERK_SECRET_KEY production                    # sk_live_…
+   ```
+
+   Register the `user.created` endpoint on the Production instance at
+   `https://design-docs.flip.id/api/webhooks/clerk` and replace
+   `CLERK_WEBHOOK_SIGNING_SECRET` — development and production endpoints have
+   **different** secrets. Then `npx vercel --prod`; env changes need a redeploy.
+
+8. **Re-enable Standard Protection.** The custom domain stays public, deployment
+   URLs go back behind SSO.
+
+9. **Re-run the §8 curl checks** against the new domain.
+
+Consider also setting `ALLOWED_EMAIL_DOMAIN` explicitly in production. It
+defaults to `flip.id` in `lib/env.ts`, so behaviour is correct today, but this
+value *is* the access boundary and should not be left to a default.
 
 ---
 
