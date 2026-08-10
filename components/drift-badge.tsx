@@ -12,6 +12,14 @@ const LABELS: Partial<Record<DriftState, string>> = {
   source_changed: "Source design has changed",
 };
 
+/**
+ * Lets callers lay out around the badge without duplicating the rule for
+ * which states are worth showing. `DriftBadge` renders nothing for the rest.
+ */
+export function hasDriftLabel(state: DriftState): boolean {
+  return state in LABELS;
+}
+
 export function DriftBadge({
   state,
   checkedAt,
