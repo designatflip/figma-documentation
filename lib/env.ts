@@ -40,9 +40,9 @@ export const blobToken = () => required("BLOB_READ_WRITE_TOKEN");
 export const cronSecret = () => required("CRON_SECRET");
 
 /**
- * Email domain allowed to sign in. Enforced in `proxy.ts` in addition to the
- * Clerk dashboard restriction, so a dashboard misconfiguration cannot silently
- * open the site up.
+ * Email domain allowed to sign in. Clerk's dashboard allowlist is paid-only on
+ * production instances, so this value *is* the access boundary — see
+ * `lib/auth.ts` for the rule and the two places that enforce it.
  */
 export const allowedEmailDomain = () =>
   optional("ALLOWED_EMAIL_DOMAIN", "flip.id").toLowerCase();
