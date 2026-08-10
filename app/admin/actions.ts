@@ -3,6 +3,7 @@
 import { updateTag } from "next/cache";
 import { auth } from "@clerk/nextjs/server";
 
+import { checkSessionAccess, logMissingClaim } from "@/lib/auth";
 import { syncProject } from "@/lib/figma/sync";
 
 export interface SyncActionResult {
@@ -15,9 +16,18 @@ export interface SyncActionResult {
  * there is deliberately no second code path that could drift from it.
  */
 export async function runSyncAction(): Promise<SyncActionResult> {
-  const { userId } = await auth();
+  const { userId, sessionClaims } = await auth();
   if (!userId) {
     return { ok: false, message: "Not signed in." };
+  }
+
+  // Re-checked here rather than trusted from `proxy.ts`. A Server Action is a
+  // POST to an arbitrary endpoint, and this one spends Figma quota and rewrites
+  // the catalogue — too much to hang on an optimistic proxy check.
+  const access = checkSessionAccess(sessionClaims);
+  if (access === "missing-claim") logMissingClaim("runSyncAction");
+  if (access !== "allowed") {
+    return { ok: false, message: "Not authorised." };
   }
 
   try {

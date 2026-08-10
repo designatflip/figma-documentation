@@ -1,40 +1,49 @@
-import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
+import { clerkMiddleware } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
 
-import { allowedEmailDomain } from "@/lib/env";
+import { checkSessionAccess, logMissingClaim } from "@/lib/auth";
 
 /**
  * Next.js 16 renamed `middleware.ts` to `proxy.ts`. Same execution model.
  */
 
 /**
- * The cron target authenticates with `CRON_SECRET` inside the route handler,
- * so it must bypass Clerk entirely — Vercel Cron cannot present a session.
+ * Routes that carry their own authentication, or none:
+ *
+ * - `/api/sync` and `/api/webhooks/*` authenticate inside the handler
+ *   (`CRON_SECRET` and a Svix signature). Neither caller can present a session.
+ * - `/sign-in`, `/sign-up` and `/not-authorized` must stay reachable signed out,
+ *   or the redirect below loops.
+ *
+ * Plain string comparison rather than Clerk's `createRouteMatcher`, which is
+ * deprecated in v7. Clerk's migration guide keeps `clerkMiddleware()` and points
+ * at `req.nextUrl.pathname` for exactly this kind of non-auth routing.
  */
-const isPublic = createRouteMatcher([
-  "/api/sync",
-  "/sign-in(.*)",
-  "/sign-up(.*)",
-  "/not-authorized",
-]);
+function isPublic(pathname: string): boolean {
+  return (
+    pathname === "/api/sync" ||
+    pathname === "/not-authorized" ||
+    pathname.startsWith("/api/webhooks/") ||
+    pathname.startsWith("/sign-in") ||
+    pathname.startsWith("/sign-up")
+  );
+}
 
 export default clerkMiddleware(async (auth, request) => {
-  if (isPublic(request)) return;
+  if (isPublic(request.nextUrl.pathname)) return;
 
   const { userId, sessionClaims } = await auth();
   if (!userId) {
     return (await auth()).redirectToSignIn();
   }
 
-  // Defence in depth. The primary control is the domain allowlist configured
-  // in the Clerk dashboard; this catches a dashboard misconfiguration.
-  //
-  // Requires an `email` custom claim on the session token (see SETUP.md).
-  // When the claim is absent we deliberately do NOT block — otherwise a
-  // missing claim configuration locks out the entire team, and the dashboard
-  // restriction is still enforcing the real boundary.
-  const email = (sessionClaims as { email?: string } | null)?.email;
-  if (email && !email.toLowerCase().endsWith(`@${allowedEmailDomain()}`)) {
+  // The optimistic check — it makes the whole site redirect cleanly rather than
+  // render for someone who should not see it. Next's docs are explicit that
+  // proxy is not an authorization layer, so anything that acts on data (the
+  // admin Server Action) repeats `checkSessionAccess` where it runs.
+  const access = checkSessionAccess(sessionClaims);
+  if (access === "missing-claim") logMissingClaim("proxy");
+  if (access !== "allowed") {
     return NextResponse.redirect(new URL("/not-authorized", request.url));
   }
 });
