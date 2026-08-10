@@ -170,10 +170,84 @@ export const screenTags = pgTable(
   (t) => [primaryKey({ columns: [t.screenId, t.tagId] })],
 );
 
+/**
+ * A single-row mutual exclusion lease for sync runs.
+ *
+ * A sync spends Figma rate-limit quota and rewrites the catalogue, so two at
+ * once is never wanted — and once designers can trigger one from a plugin,
+ * concurrent runs stop being hypothetical.
+ *
+ * A lease rather than `pg_advisory_lock` because that lock is session-scoped:
+ * holding one across a multi-minute run would mean pinning a pooled connection
+ * and sitting idle-in-transaction for the duration. The holder renews while it
+ * works, so a crashed run frees the lease by simply going quiet.
+ */
+export const syncLocks = pgTable("sync_locks", {
+  /** Always `sync`. The table holds exactly one row. */
+  id: text("id").primaryKey(),
+  /** Identifies the holder, so only it can release. */
+  token: uuid("token").notNull(),
+  /** Who started it: `cron`, or the email behind the action or plugin call. */
+  startedBy: text("started_by").notNull(),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+  /** Renewed while the run works. Past this, the lease is up for grabs. */
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+});
+
+/**
+ * A Figma plugin cannot hold a Clerk session, so it carries a bearer token
+ * minted for one person through the browser pairing flow in `/plugin/pair`.
+ *
+ * The row doubles as the pairing record. It is created the moment someone
+ * confirms pairing, carrying `pickupToken` in the clear so the plugin — which
+ * has no session and can only prove it knows `pairingState` — can collect it
+ * exactly once. Both columns are nulled on collection, after which only
+ * `tokenHash` remains and the plaintext is unrecoverable.
+ */
+export const pluginTokens = pgTable(
+  "plugin_tokens",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+
+    /** sha256 of the bearer token. Null until the plugin collects it. */
+    tokenHash: text("token_hash"),
+
+    /**
+     * The plugin-generated nonce that ties a browser pairing to the plugin
+     * instance that started it. Nulled on collection so it cannot be replayed.
+     */
+    pairingState: text("pairing_state"),
+    /** Plaintext, readable once. Nulled on collection. */
+    pickupToken: text("pickup_token"),
+    pickupExpiresAt: timestamp("pickup_expires_at", { withTimezone: true }),
+
+    /**
+     * Identity, captured at pairing. `email` is re-checked against the allowed
+     * domain on every request rather than trusted from here, so someone who
+     * leaves loses plugin access without anyone revoking the row by hand.
+     */
+    clerkUserId: text("clerk_user_id").notNull(),
+    email: text("email").notNull(),
+
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    pairedAt: timestamp("paired_at", { withTimezone: true }),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("plugin_tokens_token_hash_idx").on(t.tokenHash),
+    uniqueIndex("plugin_tokens_pairing_state_idx").on(t.pairingState),
+    index("plugin_tokens_clerk_user_id_idx").on(t.clerkUserId),
+  ],
+);
+
 export type Flow = typeof flows.$inferSelect;
 export type Screen = typeof screens.$inferSelect;
 export type ScreenText = typeof screenTexts.$inferSelect;
 export type Tag = typeof tags.$inferSelect;
+export type PluginToken = typeof pluginTokens.$inferSelect;
 
 /** `unknown` also covers "source file unreadable" — never an error state. */
 export type DriftState =

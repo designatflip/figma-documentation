@@ -33,9 +33,15 @@ export function isAllowedEmail(email: string | null | undefined): boolean {
   return email.toLowerCase().endsWith(`@${allowedEmailDomain()}`);
 }
 
-export function checkSessionAccess(sessionClaims: unknown): AccessCheck {
+/** The `email` custom claim, or null when it was never configured. */
+export function sessionEmail(sessionClaims: unknown): string | null {
   const email = (sessionClaims as { email?: string } | null | undefined)?.email;
-  if (typeof email !== "string" || email.length === 0) return "missing-claim";
+  return typeof email === "string" && email.length > 0 ? email : null;
+}
+
+export function checkSessionAccess(sessionClaims: unknown): AccessCheck {
+  const email = sessionEmail(sessionClaims);
+  if (email === null) return "missing-claim";
 
   return isAllowedEmail(email) ? "allowed" : "wrong-domain";
 }

@@ -15,6 +15,13 @@
       "when": 1786341979437,
       "tag": "0001_pg_trgm",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786371148615,
+      "tag": "0002_mixed_war_machine",
+      "breakpoints": true
     }
   ]
 }

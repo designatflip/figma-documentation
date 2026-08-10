@@ -1,0 +1,271 @@
+<style>
+  :root {
+    font: 11px/1.45 Inter, system-ui, sans-serif;
+    color: var(--figma-color-text, #1e1e1e);
+  }
+  body {
+    margin: 0;
+    padding: 16px;
+    background: var(--figma-color-bg, #fff);
+  }
+  h1 {
+    margin: 0 0 2px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  p {
+    margin: 0 0 12px;
+    color: var(--figma-color-text-secondary, #666);
+  }
+  button {
+    font: inherit;
+    font-weight: 500;
+    border: none;
+    border-radius: 6px;
+    padding: 7px 12px;
+    cursor: pointer;
+    background: var(--figma-color-bg-brand, #0d99ff);
+    color: var(--figma-color-text-onbrand, #fff);
+  }
+  button.secondary {
+    background: var(--figma-color-bg-secondary, #f0f0f0);
+    color: var(--figma-color-text, #1e1e1e);
+  }
+  button:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .file {
+    font-weight: 500;
+    color: var(--figma-color-text, #1e1e1e);
+  }
+  .result {
+    margin-top: 12px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: var(--figma-color-bg-secondary, #f5f5f5);
+    white-space: pre-wrap;
+  }
+  .result.error {
+    background: var(--figma-color-bg-danger-tertiary, #ffe8e5);
+    color: var(--figma-color-text-danger, #b3261e);
+  }
+  .hidden {
+    display: none;
+  }
+</style>
+
+<div id="app">
+  <div id="loading">
+    <p>Loading…</p>
+  </div>
+
+  <!-- No fileKey: the plugin is running unprivileged, which we cannot fix from here. -->
+  <div id="no-file-key" class="hidden">
+    <h1>Can’t identify this file</h1>
+    <p>
+      This plugin needs <code>figma.fileKey</code>, which only private plugins
+      can read. Import it from <code>manifest.json</code> as a development
+      plugin, or install the published private version.
+    </p>
+  </div>
+
+  <div id="pairing" class="hidden">
+    <h1>Connect your account</h1>
+    <p>
+      Publishing runs as you, so the plugin needs to be linked to your
+      documentation-site account once. This opens a browser tab.
+    </p>
+    <div class="row">
+      <button id="connect">Connect</button>
+      <button id="cancel-pairing" class="secondary hidden">Cancel</button>
+    </div>
+    <div id="pairing-status" class="result hidden"></div>
+  </div>
+
+  <div id="ready" class="hidden">
+    <h1>Publish to documentation</h1>
+    <p>
+      Syncs <span class="file" id="file-name"></span> only. Frames named with
+      the ignore prefix stay unpublished.
+    </p>
+    <div class="row">
+      <button id="publish">Publish this file</button>
+      <button id="disconnect" class="secondary">Disconnect</button>
+    </div>
+    <div id="result" class="result hidden"></div>
+  </div>
+</div>
+
+<script>
+  // Point at the deployment this plugin publishes to. Both this and the
+  // localhost fallback must appear in manifest.json's networkAccess, or the
+  // browser blocks the request before it is sent.
+  const API_BASE = "https://figma-documentation-red.vercel.app";
+
+  /** How long the designer has to finish signing in, matching the server. */
+  const POLL_INTERVAL_MS = 2000;
+  const POLL_TIMEOUT_MS = 5 * 60 * 1000;
+
+  let state = { token: null, fileKey: null, fileName: "" };
+  let pollTimer = null;
+
+  const el = (id) => document.getElementById(id);
+  const show = (id, visible) => el(id).classList.toggle("hidden", !visible);
+
+  function post(message) {
+    parent.postMessage({ pluginMessage: message }, "*");
+  }
+
+  function render() {
+    show("loading", false);
+    show("no-file-key", state.fileKey === null);
+    show("pairing", state.fileKey !== null && !state.token);
+    show("ready", state.fileKey !== null && Boolean(state.token));
+    el("file-name").textContent = state.fileName;
+  }
+
+  function setResult(target, message, isError) {
+    const node = el(target);
+    node.textContent = message;
+    node.classList.toggle("error", Boolean(isError));
+    node.classList.remove("hidden");
+  }
+
+  // --- Pairing -------------------------------------------------------------
+
+  /** 32 bytes of hex — the shape `isValidPairingState` accepts server-side. */
+  function newPairingState() {
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  function stopPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = null;
+    el("connect").disabled = false;
+    show("cancel-pairing", false);
+  }
+
+  el("connect").onclick = () => {
+    const pairingState = newPairingState();
+
+    // The browser does the authenticating; the plugin only waits for the token
+    // that the pairing page mints once a real session has been checked.
+    post({
+      type: "open-pairing",
+      url: `${API_BASE}/plugin/pair?state=${pairingState}`,
+    });
+
+    el("connect").disabled = true;
+    show("cancel-pairing", true);
+    setResult("pairing-status", "Waiting for you to confirm in the browser…", false);
+
+    const deadline = Date.now() + POLL_TIMEOUT_MS;
+
+    pollTimer = setInterval(async () => {
+      if (Date.now() > deadline) {
+        stopPolling();
+        setResult("pairing-status", "Pairing timed out. Press Connect to retry.", true);
+        return;
+      }
+
+      try {
+        const response = await fetch(`${API_BASE}/api/plugin/claim`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ state: pairingState }),
+        });
+        const body = await response.json();
+
+        if (body.status === "ready") {
+          stopPolling();
+          state.token = body.token;
+          post({ type: "save-token", token: body.token });
+          post({ type: "notify", message: "Plugin connected." });
+          render();
+        }
+      } catch (error) {
+        // A transient failure mid-poll is not worth surfacing; the deadline
+        // above is what ends a genuinely broken attempt.
+        console.error(error);
+      }
+    }, POLL_INTERVAL_MS);
+  };
+
+  el("cancel-pairing").onclick = () => {
+    stopPolling();
+    setResult("pairing-status", "Cancelled.", false);
+  };
+
+  // --- Publishing ----------------------------------------------------------
+
+  el("publish").onclick = async () => {
+    el("publish").disabled = true;
+    setResult("result", "Publishing… this usually takes a few seconds.", false);
+
+    try {
+      const response = await fetch(`${API_BASE}/api/sync`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${state.token}`,
+        },
+        body: JSON.stringify({ fileKey: state.fileKey }),
+      });
+      const body = await response.json();
+
+      if (response.status === 401) {
+        // Revoked, or the account left the allowed domain. Drop the dead token
+        // so the next run offers pairing instead of failing the same way.
+        state.token = null;
+        post({ type: "forget-token" });
+        render();
+        setResult("pairing-status", "Your access was revoked. Connect again.", true);
+        return;
+      }
+
+      if (!response.ok || body.ok === false) {
+        setResult("result", body.error || "Publish failed.", true);
+        return;
+      }
+
+      setResult("result", body.message, false);
+      post({ type: "notify", message: "Published to documentation." });
+    } catch (error) {
+      setResult(
+        "result",
+        `Could not reach the documentation site.\n${error.message}`,
+        true,
+      );
+    } finally {
+      el("publish").disabled = false;
+    }
+  };
+
+  el("disconnect").onclick = () => {
+    state.token = null;
+    post({ type: "forget-token" });
+    render();
+  };
+
+  // --- Boot ----------------------------------------------------------------
+
+  onmessage = (event) => {
+    const message = event.data.pluginMessage;
+    if (!message || message.type !== "init") return;
+
+    state = {
+      token: message.token,
+      fileKey: message.fileKey,
+      fileName: message.fileName,
+    };
+    render();
+  };
+</script>

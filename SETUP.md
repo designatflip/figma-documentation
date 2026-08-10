@@ -266,7 +266,68 @@ npm run dev
 
 ---
 
-## 8. Deploy
+## 8. Publish from inside Figma
+
+`figma-plugin/` is a private Figma plugin that publishes **the file you have
+open**, so a designer never has to leave Figma or open `/admin`. It triggers the
+same `syncProject` as everything else, scoped with `onlyFileKey`.
+
+### Install
+
+Figma → Plugins → Development → **Import plugin from manifest…** → pick
+`figma-plugin/manifest.json`.
+
+Before installing for anyone else, set `allowedDomains` in that manifest to your
+real deployment. A domain that is not listed is blocked by Figma *before* the
+request leaves the browser, which surfaces as an unexplained network error with
+nothing in your server logs.
+
+The plugin needs `figma.fileKey`, which is readable only by private plugins —
+hence `"enablePrivatePluginApi": true`. That flag also covers a locally imported
+development plugin, so the import above works today. **Publishing it org-wide
+needs a Figma plan that allows private plugins**; check with whoever administers
+the Figma organisation. Failing that, each designer imports the manifest once.
+
+### Connect
+
+Publishing runs as a person, not as a shared robot: `CRON_SECRET` must never
+ship inside a plugin bundle, since anyone who can run the plugin can read it.
+
+Press **Connect**. The plugin opens `/plugin/pair` in a browser, which sits
+behind Clerk like every other page — so pairing is exactly as restricted as the
+site, `@flip.id` included. Confirming there mints a token bound to that Clerk
+user; the plugin collects it once and keeps it in `figma.clientStorage`.
+
+The pairing code is single-use, expires in five minutes, and only the plugin
+instance that generated it can redeem it.
+
+### Revoke
+
+`/admin` → **Figma plugins** lists everyone connected, with a Revoke button.
+Revocation applies on the next publish. Nothing needs revoking when someone
+leaves, though — `authenticateSyncRequest` re-checks the email domain on every
+call, so losing the Clerk account is enough.
+
+### Check it works
+
+- Open a file **in** the documentation project → Publish → a summary appears
+  within seconds and the screen updates on `/`.
+- Publish again → `0 image write(s)`. Re-publishing is meant to be cheap.
+- Open a file **outside** the project → it must say so plainly rather than
+  report a successful publish of nothing.
+- Revoke your own token, then Publish → the plugin drops the dead token and
+  offers Connect again.
+
+### One sync at a time
+
+Every trigger — cron, `/admin`, `npm run sync`, the plugin — takes a lease in
+`sync_locks` first, and a second caller gets a 409 rather than a duplicate run
+burning Figma quota. The lease is renewed while a run works and expires on its
+own after a crash, so nothing stays stuck.
+
+---
+
+## 9. Deploy
 
 ```bash
 npx vercel --prod
@@ -286,12 +347,12 @@ curl -X POST https://<your-deployment>/api/sync
 
 Both checks return the Vercel SSO redirect, not `200`/`401`, if **Deployment
 Protection** is on. Standard Protection exempts custom production domains only —
-a `*.vercel.app` project alias is not one — so it must be off until step 9 lands
-a real domain. Settings → Deployment Protection → Vercel Authentication.
+a `*.vercel.app` project alias is not one — so it must be off until step 10
+lands a real domain. Settings → Deployment Protection → Vercel Authentication.
 
 ---
 
-## 9. Outstanding: move production off the Clerk development instance
+## 10. Outstanding: move production off the Clerk development instance
 
 **Production currently serves `figma-documentation-red.vercel.app` on Clerk
 `pk_test_`/`sk_test_` keys** (instance `well-snipe-77`). Everything works, but
@@ -342,7 +403,7 @@ record below is added there, not in Vercel.
 8. **Re-enable Standard Protection.** The custom domain stays public, deployment
    URLs go back behind SSO.
 
-9. **Re-run the §8 curl checks** against the new domain.
+9. **Re-run the §9 curl checks** against the new domain.
 
 Consider also setting `ALLOWED_EMAIL_DOMAIN` explicitly in production. It
 defaults to `flip.id` in `lib/env.ts`, so behaviour is correct today, but this

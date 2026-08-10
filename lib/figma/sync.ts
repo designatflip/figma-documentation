@@ -57,6 +57,21 @@ export interface SyncSummary {
   preview: FlowPreview[];
 }
 
+/**
+ * The one-line result every trigger surface shows — the admin button, the
+ * plugin, and the API response. Shared so the wording cannot drift between them.
+ */
+export function formatSyncSummary(summary: SyncSummary): string {
+  return [
+    `${summary.flowsSynced} flow(s) synced`,
+    `${summary.flowsSkipped} unchanged`,
+    `${summary.screensRendered} screen(s)`,
+    `${summary.blobWrites} image write(s)`,
+    `${summary.driftFlagged} drift flag(s)`,
+    `${summary.requestCount} Figma request(s)`,
+  ].join(" · ");
+}
+
 export interface FlowPreview {
   fileKey: string;
   name: string;
@@ -131,7 +146,17 @@ export async function syncProject(
       if (!options.dryRun) {
         await db
           .update(flows)
-          .set({ syncStatus: "error", syncError: message })
+          .set({
+            syncStatus: "error",
+            syncError: message,
+            // The flow row is upserted with the new `last_modified` *before*
+            // rendering, so a failure after that point would leave the change
+            // gate believing this file is done — and the retry would skip it
+            // until Figma next touched the file. Clearing the gate makes a
+            // failed sync retry, which is what anyone pressing Publish again
+            // in the plugin already assumes happens.
+            lastModified: null,
+          })
           .where(eq(flows.fileKey, file.key));
       }
     }
