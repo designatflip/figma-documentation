@@ -58,9 +58,80 @@
   .hidden {
     display: none;
   }
+  hr {
+    margin: 16px 0;
+    border: none;
+    border-top: 1px solid var(--figma-color-border, #e6e6e6);
+  }
+  textarea#paste-target {
+    box-sizing: border-box;
+    width: 100%;
+    height: 56px;
+    margin-top: 8px;
+    padding: 8px;
+    font: inherit;
+    resize: none;
+    color: var(--figma-color-text, #1e1e1e);
+    background: var(--figma-color-bg, #fff);
+    border: 1px dashed var(--figma-color-border, #d9d9d9);
+    border-radius: 6px;
+  }
+  textarea#paste-target:focus {
+    outline: none;
+    border-style: solid;
+    border-color: var(--figma-color-border-brand-strong, #0d99ff);
+  }
+  .ok {
+    color: var(--figma-color-text-success, #14ae5c);
+  }
+  ul#worklist {
+    max-height: 168px;
+    overflow-y: auto;
+    margin: 12px 0 0;
+    padding: 0;
+    list-style: none;
+    border-top: 1px solid var(--figma-color-border, #e6e6e6);
+  }
+  ul#worklist li {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    padding: 5px 2px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--figma-color-border, #f0f0f0);
+  }
+  ul#worklist li:hover {
+    background: var(--figma-color-bg-secondary, #f5f5f5);
+  }
+  ul#worklist li.next {
+    font-weight: 600;
+  }
+  ul#worklist .mark {
+    width: 12px;
+    flex: none;
+    text-align: center;
+  }
+  ul#worklist .name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  ul#worklist .note {
+    flex: none;
+    color: var(--figma-color-text-secondary, #888);
+  }
+  li.done .mark {
+    color: var(--figma-color-text-success, #14ae5c);
+  }
+  li.stale .mark {
+    color: var(--figma-color-text-warning, #d97706);
+  }
 </style>
 
 <div id="app">
+  <div id="dev-banner" class="result hidden"></div>
+
   <div id="loading">
     <p>Loading…</p>
   </div>
@@ -100,19 +171,56 @@
     </div>
     <div id="result" class="result hidden"></div>
   </div>
+
+  <!--
+    Clipboard capture.
+
+    The documentation site cannot build a Figma clipboard payload itself — the
+    format is Figma's own, and the REST API never exposes it. So it is captured
+    here, out of a real copy, and replayed verbatim by the "Copy to Figma"
+    button on each screen's page.
+
+    Which screen a payload belongs to is read server-side from the payload's
+    own header, so nothing below has to identify the frame. The selection line
+    is a courtesy, to catch a wrong selection before the round trip.
+  -->
+  <div id="capture" class="hidden">
+    <hr />
+    <h1>Make screens copyable</h1>
+    <p id="capture-progress">
+      Select a published frame, press <b>⌘C</b>, then click the box below and
+      press <b>⌘V</b>.
+    </p>
+    <div id="selection" class="result">Nothing selected.</div>
+    <textarea id="paste-target" placeholder="Click here, then ⌘V"></textarea>
+    <div id="capture-result" class="result hidden"></div>
+    <ul id="worklist" class="hidden"></ul>
+  </div>
 </div>
 
 <script>
-  // Point at the deployment this plugin publishes to. Both this and the
-  // localhost fallback must appear in manifest.json's networkAccess, or the
-  // browser blocks the request before it is sent.
-  const API_BASE = "https://figma-documentation-red.vercel.app";
+  // Point at the deployment this plugin publishes to. Both hosts must appear
+  // in manifest.json's networkAccess, or the browser blocks the request before
+  // it is sent — and a blocked preflight surfaces as "Failed to fetch" with no
+  // status code and no server-side log, which is a miserable thing to debug.
+  //
+  // Flip to true to work against `next dev`. The banner below exists so a
+  // plugin left in this mode announces itself instead of quietly publishing
+  // nowhere. Note that only these two hosts are reachable: a Vercel preview
+  // deployment is not, so testing a branch means running it locally.
+  // MUST be false before this is merged or published. The banner shouts when
+  // it is not, because a plugin left in dev mode publishes nowhere and says
+  // nothing useful about why.
+  const DEV = true;
+  const API_BASE = DEV
+    ? "http://localhost:3000"
+    : "https://figma-documentation-red.vercel.app";
 
   /** How long the designer has to finish signing in, matching the server. */
   const POLL_INTERVAL_MS = 2000;
   const POLL_TIMEOUT_MS = 5 * 60 * 1000;
 
-  let state = { token: null, fileKey: null, fileName: "" };
+  let state = { token: null, fileKey: null, fileName: "", selection: null };
   let pollTimer = null;
 
   const el = (id) => document.getElementById(id);
@@ -124,17 +232,39 @@
 
   function render() {
     show("loading", false);
+    show("dev-banner", DEV);
+    if (DEV) {
+      el("dev-banner").textContent = `DEV MODE — talking to ${API_BASE}. Set DEV = false before merging.`;
+      el("dev-banner").classList.add("error");
+    }
     show("no-file-key", state.fileKey === null);
     show("pairing", state.fileKey !== null && !state.token);
     show("ready", state.fileKey !== null && Boolean(state.token));
+    show("capture", true);
     el("file-name").textContent = state.fileName;
+  }
+
+  /**
+   * `fetch` reports a blocked preflight, an unreachable host, and a domain
+   * missing from `networkAccess` all as the same bare "Failed to fetch", with
+   * no status and no server-side log. Naming the URL is the difference between
+   * a five-second fix and an hour of guessing.
+   */
+  function unreachable(url, error) {
+    return [
+      `Could not reach ${url}`,
+      `  ${error.message}`,
+      "",
+      "Usually one of: the server isn't running, the route isn't deployed to",
+      "that host yet, or the host is missing from manifest.json networkAccess.",
+    ].join("\n");
   }
 
   function setResult(target, message, isError) {
     const node = el(target);
     node.textContent = message;
     node.classList.toggle("error", Boolean(isError));
-    node.classList.remove("hidden");
+    node.classList.remove("hidden", "ok");
   }
 
   // --- Pairing -------------------------------------------------------------
@@ -190,6 +320,7 @@
           post({ type: "save-token", token: body.token });
           post({ type: "notify", message: "Plugin connected." });
           render();
+          loadWorklist();
         }
       } catch (error) {
         // A transient failure mid-poll is not worth surfacing; the deadline
@@ -239,11 +370,7 @@
       setResult("result", body.message, false);
       post({ type: "notify", message: "Published to documentation." });
     } catch (error) {
-      setResult(
-        "result",
-        `Could not reach the documentation site.\n${error.message}`,
-        true,
-      );
+      setResult("result", unreachable(`${API_BASE}/api/sync`, error), true);
     } finally {
       el("publish").disabled = false;
     }
@@ -255,17 +382,237 @@
     render();
   };
 
+  // --- Clipboard capture ---------------------------------------------------
+
+  // Only a cheap pre-check, so an obviously wrong paste never costs a round
+  // trip. `lib/figma/clipboard.ts` is the real parser and the only one whose
+  // verdict counts.
+  const FIGMA_MARKER = /(?:<|&lt;)!--\(figma\)/;
+
+  /**
+   * The worklist.
+   *
+   * Capture cannot be automated — only a real ⌘C produces a payload — so this
+   * automates everything around it: what is left, what went stale, and where
+   * the next frame is. After each successful capture it advances on its own,
+   * which is what turns twenty screens from a scavenger hunt into a rhythm.
+   */
+  let worklist = [];
+
+  const MARKS = { captured: "✓", stale: "⚠", missing: "○" };
+
+  /** Stale before missing: a wrong clip on the site is worse than none. */
+  function nextUp() {
+    return (
+      worklist.find((item) => item.state === "stale") ||
+      worklist.find((item) => item.state === "missing") ||
+      null
+    );
+  }
+
+  function renderWorklist() {
+    const list = el("worklist");
+    show("worklist", worklist.length > 0);
+    if (worklist.length === 0) return;
+
+    const next = nextUp();
+    const done = worklist.filter((i) => i.state === "captured").length;
+    const stale = worklist.filter((i) => i.state === "stale").length;
+
+    el("capture-progress").textContent = next
+      ? `${done} of ${worklist.length} captured${stale ? ` · ${stale} out of date` : ""}. ` +
+        `Press ⌘C on the highlighted frame, then ⌘V below.`
+      : `All ${worklist.length} screens captured. Nothing left to do.`;
+
+    list.replaceChildren(
+      ...worklist.map((item) => {
+        const li = document.createElement("li");
+        li.className =
+          (item.state === "captured" ? "done " : item.state === "stale" ? "stale " : "") +
+          (next && item.nodeId === next.nodeId ? "next" : "");
+
+        const mark = document.createElement("span");
+        mark.className = "mark";
+        mark.textContent = MARKS[item.state];
+
+        const name = document.createElement("span");
+        name.className = "name";
+        name.textContent = item.name;
+
+        li.append(mark, name);
+
+        if (item.state === "stale") {
+          const note = document.createElement("span");
+          note.className = "note";
+          note.textContent = "changed";
+          li.append(note);
+        }
+
+        // Clicking a row jumps to it, so a screen can be re-captured out of
+        // order without fighting the queue.
+        li.onclick = () => post({ type: "select-node", nodeId: item.nodeId });
+        return li;
+      }),
+    );
+  }
+
+  /** Select and scroll to whatever should be captured next. */
+  function focusNext() {
+    const next = nextUp();
+    if (next) post({ type: "select-node", nodeId: next.nodeId });
+  }
+
+  async function loadWorklist(options) {
+    if (!state.fileKey || !state.token) return;
+
+    try {
+      const response = await fetch(
+        `${API_BASE}/api/clips?fileKey=${encodeURIComponent(state.fileKey)}`,
+        { headers: { Authorization: `Bearer ${state.token}` } },
+      );
+      const body = await response.json();
+
+      if (!response.ok || body.ok === false) {
+        // Not an error worth shouting about: a file with nothing published
+        // yet is a normal state, and the paste box still works without a list.
+        worklist = [];
+        renderWorklist();
+        return;
+      }
+
+      worklist = body.items;
+      renderWorklist();
+      if (options && options.advance) focusNext();
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
+  function renderSelection(selection) {
+    state.selection = selection;
+    const node = el("selection");
+
+    if (!selection) {
+      node.textContent = "Nothing selected — select exactly one frame.";
+      node.classList.remove("error");
+      return;
+    }
+
+    node.textContent = selection.isScreenFrame
+      ? `${selection.name}  ·  ${selection.id}`
+      : `"${selection.name}" is a ${selection.type}, not a top-level frame. ` +
+        "Only top-level frames are documented screens.";
+    node.classList.toggle("error", !selection.isScreenFrame);
+  }
+
+  el("paste-target").addEventListener("paste", async (event) => {
+    // The textarea is only a focus target; the plain-text half of the
+    // clipboard is noise and we never want it rendered.
+    event.preventDefault();
+
+    const html = event.clipboardData
+      ? event.clipboardData.getData("text/html")
+      : "";
+
+    if (!html || !FIGMA_MARKER.test(html)) {
+      setResult(
+        "capture-result",
+        "That isn't a Figma frame. Select a frame on the canvas, press ⌘C, " +
+          "then paste here.",
+        true,
+      );
+      return;
+    }
+
+    if (!state.token) {
+      setResult(
+        "capture-result",
+        "Connect your account first — capture is recorded against you.",
+        true,
+      );
+      return;
+    }
+
+    setResult("capture-result", "Uploading…", false);
+
+    try {
+      // The payload goes up as the raw body. Wrapping ~1 MB of HTML in JSON
+      // would only add a way for the bytes to change on the way.
+      const response = await fetch(`${API_BASE}/api/clips`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "text/html",
+          Authorization: `Bearer ${state.token}`,
+        },
+        body: html,
+      });
+      const body = await response.json();
+
+      if (response.status === 401) {
+        state.token = null;
+        post({ type: "forget-token" });
+        render();
+        setResult("pairing-status", "Your access was revoked. Connect again.", true);
+        return;
+      }
+
+      if (!response.ok || body.ok === false) {
+        setResult("capture-result", body.error || "Capture failed.", true);
+        return;
+      }
+
+      setResult("capture-result", body.message, false);
+      el("capture-result").classList.add("ok");
+      post({ type: "notify", message: "Screen is now copyable." });
+
+      // Re-read rather than patching the row locally: the server decides what
+      // counts as captured, and it just learned something this list has not.
+      await loadWorklist({ advance: true });
+    } catch (error) {
+      setResult("capture-result", unreachable(`${API_BASE}/api/clips`, error), true);
+    } finally {
+      // Clearing it makes the box obviously ready for the next frame, which
+      // matters when working through a file one screen at a time.
+      el("paste-target").value = "";
+    }
+  });
+
   // --- Boot ----------------------------------------------------------------
 
   onmessage = (event) => {
     const message = event.data.pluginMessage;
-    if (!message || message.type !== "init") return;
+    if (!message) return;
+
+    if (message.type === "selection") {
+      renderSelection(message.selection);
+      return;
+    }
+
+    if (message.type === "select-failed") {
+      // The screen is published but its frame is gone from the file — deleted
+      // or renamed into a different node. Saying so beats a silent no-op.
+      setResult(
+        "capture-result",
+        "That frame is no longer in this file. Publish the file again to " +
+          "bring the list back in step.",
+        true,
+      );
+      return;
+    }
+
+    if (message.type !== "init") return;
 
     state = {
       token: message.token,
       fileKey: message.fileKey,
       fileName: message.fileName,
+      selection: null,
     };
     render();
+    renderSelection(message.selection);
+
+    // Loaded, but deliberately not advanced: yanking the viewport the instant
+    // the plugin opens would be hostile. The first ⌘V starts the queue.
+    loadWorklist();
   };
 </script>
