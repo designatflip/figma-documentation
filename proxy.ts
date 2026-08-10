@@ -28,6 +28,7 @@ import { checkSessionAccess, logMissingClaim } from "@/lib/auth";
 function isPublic(pathname: string): boolean {
   return (
     pathname === "/api/sync" ||
+    pathname === "/api/clips" ||
     pathname === "/api/plugin/claim" ||
     pathname === "/not-authorized" ||
     pathname.startsWith("/api/webhooks/") ||

@@ -171,6 +171,44 @@ export const screenTags = pgTable(
 );
 
 /**
+ * A captured Figma clipboard payload, so the site can offer "copy this screen
+ * into my file" and have it paste as real layers.
+ *
+ * One row per screen, hence `screen_id` as the primary key. The payload itself
+ * lives in Blob: it runs to hundreds of kilobytes for one frame, and it is
+ * only ever fetched whole by the button that puts it on the clipboard.
+ *
+ * These rows outlive a sync — `screens` is upserted on `(flow_id, node_id)`
+ * and archived rather than deleted, so the id a clip points at is stable.
+ */
+export const screenClips = pgTable("screen_clips", {
+  screenId: uuid("screen_id")
+    .primaryKey()
+    .references(() => screens.id, { onDelete: "cascade" }),
+
+  blobUrl: text("blob_url").notNull(),
+  /** sha256 of the payload. Content-addresses the blob, so re-capture of an
+   * unchanged frame rewrites the same bytes to the same path. */
+  contentHash: text("content_hash").notNull(),
+  byteSize: integer("byte_size").notNull(),
+
+  /**
+   * `screens.image_hash` at the moment of capture.
+   *
+   * The payload is a snapshot and cannot re-sync itself, so this is how the
+   * site knows a clip has fallen behind the design: the rendered PNG's hash
+   * changes exactly when the frame's appearance does.
+   */
+  capturedImageHash: text("captured_image_hash"),
+
+  /** Who pasted it in. Capture is a manual act and worth attributing. */
+  capturedByEmail: text("captured_by_email").notNull(),
+  capturedAt: timestamp("captured_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+/**
  * A single-row mutual exclusion lease for sync runs.
  *
  * A sync spends Figma rate-limit quota and rewrites the catalogue, so two at
@@ -248,6 +286,7 @@ export type Screen = typeof screens.$inferSelect;
 export type ScreenText = typeof screenTexts.$inferSelect;
 export type Tag = typeof tags.$inferSelect;
 export type PluginToken = typeof pluginTokens.$inferSelect;
+export type ScreenClip = typeof screenClips.$inferSelect;
 
 /** `unknown` also covers "source file unreadable" — never an error state. */
 export type DriftState =

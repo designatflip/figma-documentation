@@ -3,8 +3,10 @@ import { notFound } from "next/navigation";
 import { connection } from "next/server";
 import { Suspense } from "react";
 
+import { CopyToFigma } from "@/components/copy-to-figma";
 import { DriftBadge, hasDriftLabel } from "@/components/drift-badge";
 import { ScreenImage } from "@/components/screen-image";
+import { getClipStatus } from "@/lib/clips";
 import { getScreenById } from "@/lib/queries";
 
 type Props = PageProps<"/screens/[id]">;
@@ -26,6 +28,10 @@ async function ScreenContent({ params, searchParams }: Props) {
 
   const screen = await getScreenById(id);
   if (!screen) notFound();
+
+  // Read uncached, unlike the screen itself: capture happens outside a sync,
+  // so it has no `catalog` revalidation to ride on. It is a primary-key lookup.
+  const clip = await getClipStatus(id);
 
   return (
     <>
@@ -84,6 +90,16 @@ async function ScreenContent({ params, searchParams }: Props) {
               </h2>
               <p className="text-sm leading-relaxed">{screen.description}</p>
             </div>
+          )}
+
+          {/*
+            The primary action, above the links: a designer who found this
+            screen usually wants it in their own file, not a tab on it.
+            Absent — not disabled — until the frame has been captured through
+            the plugin, since there is nothing to hand over before then.
+          */}
+          {clip && !screen.archivedAt && (
+            <CopyToFigma screenId={screen.id} stale={clip.stale} />
           )}
 
           {/*
