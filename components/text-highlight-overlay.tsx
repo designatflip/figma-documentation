@@ -23,6 +23,18 @@ export function matchingBoxes(
 }
 
 /**
+ * Above this share of the frame, a filled box stops reading as a highlight and
+ * starts reading as a blob over the screen.
+ *
+ * Figma reports a TEXT node's bounding box, not per-glyph rects, so a term
+ * matched inside a long paragraph — terms and conditions, an empty-state
+ * explainer — comes back as the whole paragraph. Those get the ring without the
+ * fill: it still says which block of copy answered, and the copy underneath
+ * stays readable, which is the entire reason for pointing at it.
+ */
+const LARGE_BOX_AREA = 0.05;
+
+/**
  * Where on a render the search term actually is, drawn over it.
  *
  * A search result is a picture of a screen, and the reason it came back is a
@@ -56,7 +68,8 @@ export function TextHighlightOverlay({
         <span
           key={`${box.x}-${box.y}-${index}`}
           className={
-            "absolute rounded-[2px] bg-accent/25 " +
+            "absolute rounded-[2px] " +
+            (box.w * box.h > LARGE_BOX_AREA ? "" : "bg-accent/25 ") +
             (weight === "thick" ? "ring-2 ring-accent" : "ring-1 ring-accent")
           }
           style={{
