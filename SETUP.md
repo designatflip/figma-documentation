@@ -14,17 +14,25 @@ you touch the UI.
 ### The documentation project
 
 Create a Figma **project** (folder) used only for documentation. Each **file**
-inside it becomes a flow; the frames inside become screens.
+inside it is a stream, each **page** in that file is a flow, and the top-level
+frames on that page are its screens.
 
 ```
 Figma Project "Product Documentation"    ← FIGMA_PROJECT_ID
-├── File "Top Up"                        → flow
-│   ├── Page "Happy path"                → section
-│   │   ├── Frame "Amount"               → screen
-│   │   └── Frame "Method"               → screen
-│   └── Page "Error states"              → section
-└── File "_scratch"                      → skipped
+├── File "Payment & Transfers"           → stream
+│   ├── Page "Domestic Transfer"         → flow
+│   │   ├── Frame "Home Page"            → screen
+│   │   └── Frame "Beneficiary Page"     → screen
+│   ├── Page "Top Up E-Wallet"           → flow
+│   └── Page "_scratch"                  → skipped
+└── File "_wip"                          → skipped
 ```
+
+The ignore prefix (`DOCS_IGNORE_PATTERN`) is the escape hatch at all three
+levels: a file, a page or a frame whose name matches it stays unpublished.
+
+A flow is identified by its page's Figma node id, so renaming a page keeps its
+screens — and the links people have already shared to them.
 
 Get the project id from the URL when the folder is open:
 `figma.com/files/project/`**`1234567`**`/...`
@@ -205,9 +213,9 @@ npm run sync -- --check-token    # scopes, including file_dev_resources:read
 npm run sync -- --dry-run        # resolves everything, writes nothing
 ```
 
-The dry run prints the discovered flow/screen tree with extracted copy and
-source links. Check against Figma that flows and frame counts match, and that
-one frame's copy is complete and in reading order.
+The dry run prints the discovered stream/flow/screen tree with extracted copy
+and source links. Check against Figma that the pages and their frame counts
+match, and that one frame's copy is complete and in reading order.
 
 Then for real:
 
@@ -223,7 +231,7 @@ SELECT count(*) FROM screens WHERE image_url NOT LIKE '%blob.vercel-storage.com%
 ```
 
 **Re-run immediately.** The second run must skip every file at the change gate
-(`flowsSkipped` equals `flowsChecked`). Then:
+(`streamsSkipped` equals `streamsChecked`). Then:
 
 ```bash
 npm run sync -- --force
@@ -239,14 +247,16 @@ Test all four transitions — this is the core contract of the whole system.
 
 | # | Do this in Figma | Expect after `npm run sync` |
 |---|---|---|
-| 1 | Add a file to the project | Appears as a flow with its frames |
-| 2 | Move the file out of the project | Flow + screens archived, gone from `/` and search |
-| 3 | Move it back | `archived_at` clears, **0 blob writes**, original screen IDs |
-| 4 | Rename a frame to `_old` | Only that screen archives |
+| 1 | Add a file to the project | Appears as a stream, one rail per page |
+| 2 | Add a page to that file | Appears as a flow with its frames |
+| 3 | Move the file out of the project | Stream, flows + screens archived, gone from `/` and search |
+| 4 | Move it back | `archived_at` clears, **0 blob writes**, original screen IDs |
+| 5 | Rename a page | Same flow, same screen IDs — it is keyed on the page's node id |
+| 6 | Rename a frame to `_old` | Only that screen archives |
 
-Step 2 should **trip the mass-archive guardrail** and refuse. Confirm it does,
-then re-run with `--allow-mass-archive`. A guardrail nobody has seen fire is not
-a guardrail.
+Deleting most of the frames on a page (once it has at least five) should **trip
+the mass-archive guardrail** and refuse. Confirm it does, then re-run with
+`--allow-mass-archive`. A guardrail nobody has seen fire is not a guardrail.
 
 Also check: an archived screen's URL still renders read-only with a notice
 rather than 404-ing.
@@ -291,9 +301,18 @@ npm run dev
 
 ## 8. Publish from inside Figma
 
-`figma-plugin/` is a private Figma plugin that publishes **the file you have
-open**, so a designer never has to leave Figma or open `/admin`. It triggers the
-same `syncProject` as everything else, scoped with `onlyFileKey`.
+`figma-plugin/` is a private Figma plugin that publishes **the page you have
+open**, so a designer never has to leave Figma or open `/admin`.
+
+The page, not the file: a documentation file is a product stream running to
+hundreds of frames across a dozen pages, and re-rendering all of it to publish
+one flow would spend minutes of the rate limit for nothing. `syncPage` reads the
+one canvas — its frames, their copy and wiring, and its prototype starting
+points — in a single request, and is complete within that page: it archives what
+has gone from it, reorders what moved, and rewrites its prototypes.
+
+What it will not do is stamp `streams.last_modified`, the nightly run's change
+gate. Pages nobody pressed the button on are still picked up by the cron.
 
 ### Install
 
@@ -333,11 +352,16 @@ call, so losing the Clerk account is enough.
 
 ### Check it works
 
-- Open a file **in** the documentation project → Publish → a summary appears
-  within seconds and the screen updates on `/`.
-- Publish again → `0 image write(s)`. Re-publishing is meant to be cheap.
-- Open a file **outside** the project → it must say so plainly rather than
-  report a successful publish of nothing.
+- Open a page in a documentation file → **Publish this page** → a summary
+  appears within seconds and the flow's rail updates on `/`.
+- Publish again → "every image was already identical". Re-publishing is meant to
+  be cheap.
+- Switch to another page in the same file → the panel must immediately name that
+  page instead, and publishing it must leave the first one alone.
+- Rename the page, publish again → the same flow is updated, not a second one.
+- Select one frame → **Publish selected screen** → only that screen changes.
+- Open a page in a file **outside** the documentation project → it must say so
+  plainly rather than report a successful publish of nothing.
 - Revoke your own token, then Publish → the plugin drops the dead token and
   offers Connect again.
 

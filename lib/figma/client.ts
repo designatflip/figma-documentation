@@ -200,8 +200,8 @@ export class FigmaClient {
 
   /**
    * Discovery *and* change gate in one request: the response carries
-   * `last_modified` per file, so unchanged flows are skipped without ever
-   * fetching them.
+   * `last_modified` per file, so an unchanged stream is skipped without ever
+   * fetching it.
    */
   getProjectFiles(projectId: string) {
     return this.request<GetProjectFilesResponse>(

@@ -5,7 +5,7 @@
  *   npm run sync -- --dry-run          resolve everything, write nothing
  *   npm run sync                       normal run
  *   npm run sync -- --force            ignore the last_modified change gate
- *   npm run sync -- --file <key>       one flow file only
+ *   npm run sync -- --file <key>       one stream's file only
  *   npm run sync -- --allow-mass-archive
  *   npm run sync -- --check-token      verify token scopes and exit
  *   npm run sync -- --skip-drift
@@ -87,32 +87,37 @@ async function main() {
 
   if (dryRun) {
     console.log("\n──── DRY RUN — nothing was written ────\n");
-    for (const flow of summary.preview) {
-      console.log(`▸ ${flow.name}  (${flow.frames.length} screens)`);
-      for (const proto of flow.prototypes) {
-        console.log(`   prototype "${proto.name}" starts on ${proto.startsOn}`);
-      }
-      for (const frame of flow.frames) {
-        console.log(`   ${frame.section} / ${frame.name}`);
-        if (frame.description) {
-          console.log(`      description: ${frame.description}`);
-        }
-        if (frame.sourceUrl) {
-          console.log(`      source: ${frame.sourceUrl}`);
-        }
-        if (frame.hotspots.length > 0) {
+    for (const stream of summary.preview) {
+      console.log(`▸ ${stream.name}  (${stream.flows.length} page(s))`);
+      for (const flow of stream.flows) {
+        console.log(`  ▪ ${flow.name}  (${flow.frames.length} screens)`);
+        for (const proto of flow.prototypes) {
           console.log(
-            `      hotspots (${frame.hotspots.length}): ${frame.hotspots
-              .slice(0, 8)
-              .join(", ")}${frame.hotspots.length > 8 ? " …" : ""}`,
+            `     prototype "${proto.name}" starts on ${proto.startsOn}`,
           );
         }
-        if (frame.textSample.length > 0) {
-          console.log(
-            `      text: ${frame.textSample.map((t) => JSON.stringify(t)).join(", ")}${
-              frame.textSample.length >= 8 ? " …" : ""
-            }`,
-          );
+        for (const frame of flow.frames) {
+          console.log(`     ${frame.name}`);
+          if (frame.description) {
+            console.log(`        description: ${frame.description}`);
+          }
+          if (frame.sourceUrl) {
+            console.log(`        source: ${frame.sourceUrl}`);
+          }
+          if (frame.hotspots.length > 0) {
+            console.log(
+              `        hotspots (${frame.hotspots.length}): ${frame.hotspots
+                .slice(0, 8)
+                .join(", ")}${frame.hotspots.length > 8 ? " …" : ""}`,
+            );
+          }
+          if (frame.textSample.length > 0) {
+            console.log(
+              `        text: ${frame.textSample.map((t) => JSON.stringify(t)).join(", ")}${
+                frame.textSample.length >= 8 ? " …" : ""
+              }`,
+            );
+          }
         }
       }
       console.log("");
@@ -122,9 +127,11 @@ async function main() {
   const seconds = ((Date.now() - started) / 1000).toFixed(1);
   console.log("──── Summary ────");
   console.table({
-    flowsChecked: summary.flowsChecked,
-    flowsSkipped: summary.flowsSkipped,
-    flowsSynced: summary.flowsSynced,
+    streamsChecked: summary.streamsChecked,
+    streamsSkipped: summary.streamsSkipped,
+    streamsSynced: summary.streamsSynced,
+    flowsPublished: summary.flowsPublished,
+    flowsArchived: summary.flowsArchived,
     screensRendered: summary.screensRendered,
     blobWrites: summary.blobWrites,
     prototypesPublished: summary.prototypesPublished,

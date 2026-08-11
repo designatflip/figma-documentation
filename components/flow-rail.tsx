@@ -9,20 +9,21 @@ const EAGER_FRAMES = 4;
 
 export interface FlowRailProps {
   name: string;
-  slug: string;
+  /** `flowAnchor` — unique across the page, unlike the flow's own slug. */
+  anchor: string;
   screens: FlowRailScreen[];
   /** Set on the first rail, whose leading frames are the page's LCP. */
   priority?: boolean;
 }
 
 /**
- * A flow as one horizontal run of frames, with its name underneath.
+ * A flow — one page of a stream's Figma file — as a horizontal run of frames,
+ * with its name underneath.
  *
  * The home page is the flow page now: rather than a cover thumbnail that has to
  * be clicked to find out what a flow contains, the screens themselves are the
- * listing, and reading a flow is scrolling sideways through it. Sections are
- * flattened into one run — see `getFlows` — because a rail has only the one
- * axis, and the frames are already in the order Figma lays them out.
+ * listing, and reading a flow is scrolling sideways through it. One rail is one
+ * Figma page, in the order the frames sit on it.
  *
  * Every frame links to `/screens/[id]`, which the modal in `app/@modal`
  * intercepts: clicking one opens the lightbox over this page, with the whole
@@ -30,12 +31,12 @@ export interface FlowRailProps {
  * prototype, the hotspot overlay, Figma links, Copy to Figma — so nothing that
  * was on the flow page has been lost, only moved one click further in.
  */
-export function FlowRail({ name, slug, screens, priority }: FlowRailProps) {
+export function FlowRail({ name, anchor, screens, priority }: FlowRailProps) {
   return (
     // The anchor the breadcrumbs and the lightbox's title point back to.
     // `scroll-mt` clears the sticky header, which would otherwise land on top
     // of the rail it just scrolled to.
-    <section id={slug} className="scroll-mt-24">
+    <section id={anchor} className="scroll-mt-24">
       {/*
         Bleeding the scroller past the page's gutter and paying it back as
         padding: the run starts flush with everything else on the page, and

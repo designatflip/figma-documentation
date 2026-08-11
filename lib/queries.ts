@@ -8,6 +8,7 @@ import {
   screenHotspots,
   screens,
   screenTexts,
+  streams,
 } from "@/db/schema";
 import type { DriftState } from "@/db/schema";
 import { FULL_BLEED_AREA } from "@/lib/figma/extract";
@@ -28,6 +29,18 @@ const CATALOG_TAG = "catalog";
  */
 const liveScreen = () => isNull(screens.archivedAt);
 const liveFlow = () => isNull(flows.archivedAt);
+const liveStream = () => isNull(streams.archivedAt);
+
+/**
+ * Where a flow's rail sits on the home page.
+ *
+ * Flow slugs are only unique within their stream — two products can both have
+ * an "Onboarding" — so the anchor has to name both. Built here rather than in
+ * the components, so the link and the target cannot be spelled differently.
+ */
+export function flowAnchor(streamSlug: string, flowSlug: string): string {
+  return `${streamSlug}--${flowSlug}`;
+}
 
 /** A frame as the home page's rail draws it: the render, and whether it drifted. */
 export interface FlowRailScreen {
@@ -43,37 +56,45 @@ export interface FlowSummary {
   id: string;
   name: string;
   slug: string;
+  /** `flowAnchor` of this flow, ready to link to and to render as an id. */
+  anchor: string;
   lastSyncedAt: Date | null;
-  /**
-   * The whole flow, in sync order, with the Figma pages flattened into one run.
-   * The home page shows a flow as a single horizontal rail, so there is no
-   * second axis for sections to group along — same reading the lightbox strip
-   * takes of the same screens.
-   */
+  /** The whole flow, in the order the frames sit on its Figma page. */
   screens: FlowRailScreen[];
 }
 
+/** A Figma file: the product stream its flows belong to. */
+export interface StreamSummary {
+  id: string;
+  name: string;
+  slug: string;
+  flows: FlowSummary[];
+}
+
 /**
- * Every documented flow with its screens, for the home page's rails.
+ * Every documented stream, its flows, and their screens — the whole home page.
  *
- * One join rather than a count plus a cover image plus a query per flow: the
- * catalogue is small, the whole result is cached for days under the `catalog`
- * tag, and a flow's screens are what the home page is now made of rather than
- * something it links to.
+ * One join rather than a query per level: the catalogue is small, the whole
+ * result is cached for days under the `catalog` tag, and the screens *are* the
+ * home page now rather than something it links to.
  *
  * `innerJoin` does the work `having count(*) > 0` used to: a flow with nothing
- * live under it has nothing to draw, so it drops out on its own.
+ * live under it has nothing to draw, and a stream with no such flow drops out
+ * behind it, both on their own.
  */
-export async function getFlows(): Promise<FlowSummary[]> {
+export async function getStreams(): Promise<StreamSummary[]> {
   "use cache";
   cacheTag(CATALOG_TAG);
   cacheLife("days");
 
   const rows = await db
     .select({
-      id: flows.id,
-      name: flows.name,
-      slug: flows.slug,
+      streamId: streams.id,
+      streamName: streams.name,
+      streamSlug: streams.slug,
+      flowId: flows.id,
+      flowName: flows.name,
+      flowSlug: flows.slug,
       lastSyncedAt: flows.lastSyncedAt,
       screenId: screens.id,
       screenName: screens.name,
@@ -82,26 +103,46 @@ export async function getFlows(): Promise<FlowSummary[]> {
       imageHeight: screens.imageHeight,
       driftState: screens.driftState,
     })
-    .from(flows)
+    .from(streams)
+    .innerJoin(flows, and(eq(flows.streamId, streams.id), liveFlow()))
     .innerJoin(screens, and(eq(screens.flowId, flows.id), liveScreen()))
-    .where(liveFlow())
-    .orderBy(asc(flows.name), asc(screens.position));
+    .where(liveStream())
+    // Streams alphabetically, but flows in Figma's own page order: the order
+    // the pages sit in the file is a decision the designers made, and reading
+    // it back to them is more use than an alphabet.
+    .orderBy(asc(streams.name), asc(flows.position), asc(screens.position));
 
-  // Insertion order is the `flows.name` ordering above, so the map hands the
-  // flows back in the order the query sorted them.
+  // Insertion order is the ordering above, so both maps hand their rows back
+  // in the order the query sorted them.
+  const byStream = new Map<string, StreamSummary>();
   const byFlow = new Map<string, FlowSummary>();
+
   for (const row of rows) {
-    let flow = byFlow.get(row.id);
+    let stream = byStream.get(row.streamId);
+    if (!stream) {
+      stream = {
+        id: row.streamId,
+        name: row.streamName,
+        slug: row.streamSlug,
+        flows: [],
+      };
+      byStream.set(row.streamId, stream);
+    }
+
+    let flow = byFlow.get(row.flowId);
     if (!flow) {
       flow = {
-        id: row.id,
-        name: row.name,
-        slug: row.slug,
+        id: row.flowId,
+        name: row.flowName,
+        slug: row.flowSlug,
+        anchor: flowAnchor(row.streamSlug, row.flowSlug),
         lastSyncedAt: row.lastSyncedAt,
         screens: [],
       };
-      byFlow.set(row.id, flow);
+      byFlow.set(row.flowId, flow);
+      stream.flows.push(flow);
     }
+
     flow.screens.push({
       id: row.screenId,
       name: row.screenName,
@@ -112,7 +153,7 @@ export async function getFlows(): Promise<FlowSummary[]> {
     });
   }
 
-  return [...byFlow.values()];
+  return [...byStream.values()];
 }
 
 /**
@@ -151,7 +192,6 @@ export interface TextBox {
 export interface ScreenCard {
   id: string;
   name: string;
-  section: string | null;
   description: string | null;
   imageUrl: string | null;
   imageWidth: number | null;
@@ -173,7 +213,6 @@ export interface ScreenCard {
 export interface FlowPrototype {
   nodeId: string;
   name: string;
-  section: string | null;
   /** The screen it opens on. Null only if that screen has been unpublished. */
   startsOn: {
     id: string;
@@ -188,11 +227,16 @@ export interface FlowDetail {
   id: string;
   name: string;
   slug: string;
+  /** Where this flow's rail sits on the home page. */
+  anchor: string;
+  /** The stream it belongs to, for the line that says where you are. */
+  streamName: string;
+  streamSlug: string;
   /** The Figma file. Needed to address the flow's prototypes. */
   fileKey: string;
   lastSyncedAt: Date | null;
-  /** Grouped by Figma page. A single unnamed group means no sub-structure. */
-  sections: { name: string | null; screens: ScreenCard[] }[];
+  /** The flow end to end, in the order the frames sit on its Figma page. */
+  screens: ScreenCard[];
   /**
    * Node ids of screens with nothing wired to tap — where a flow ends.
    *
@@ -205,15 +249,31 @@ export interface FlowDetail {
   prototypes: FlowPrototype[];
 }
 
-export async function getFlowBySlug(slug: string): Promise<FlowDetail | null> {
+/**
+ * By id rather than by slug: the screen view already holds the flow id of the
+ * screen it is showing, and a slug would have to be qualified by its stream to
+ * mean anything. Nothing links to a flow on its own — a flow is a rail on the
+ * home page and a run of frames in the lightbox — so there is no URL here to
+ * keep readable.
+ */
+export async function getFlowById(id: string): Promise<FlowDetail | null> {
   "use cache";
   cacheTag(CATALOG_TAG);
   cacheLife("days");
 
   const [flow] = await db
-    .select()
+    .select({
+      id: flows.id,
+      name: flows.name,
+      slug: flows.slug,
+      lastSyncedAt: flows.lastSyncedAt,
+      streamName: streams.name,
+      streamSlug: streams.slug,
+      fileKey: streams.fileKey,
+    })
     .from(flows)
-    .where(and(eq(flows.slug, slug), liveFlow()))
+    .innerJoin(streams, eq(streams.id, flows.streamId))
+    .where(and(eq(flows.id, id), liveFlow(), liveStream()))
     .limit(1);
 
   if (!flow) return null;
@@ -222,7 +282,6 @@ export async function getFlowBySlug(slug: string): Promise<FlowDetail | null> {
     .select({
       id: screens.id,
       name: screens.name,
-      section: screens.section,
       description: screens.description,
       imageUrl: screens.imageUrl,
       imageWidth: screens.imageWidth,
@@ -240,7 +299,6 @@ export async function getFlowBySlug(slug: string): Promise<FlowDetail | null> {
     .select({
       nodeId: flowPrototypes.nodeId,
       name: flowPrototypes.name,
-      section: flowPrototypes.section,
       screenId: screens.id,
       screenName: screens.name,
       imageUrl: screens.imageUrl,
@@ -298,29 +356,24 @@ export async function getFlowBySlug(slug: string): Promise<FlowDetail | null> {
     hotspotsByScreen.set(screenId, list);
   }
 
-  const grouped = new Map<string | null, ScreenCard[]>();
-  for (const row of rows) {
-    const key = row.section;
-    const list = grouped.get(key) ?? [];
-    list.push({
-      ...row,
-      hotspots: hotspotsByScreen.get(row.id) ?? [],
-    } as ScreenCard);
-    grouped.set(key, list);
-  }
-
   return {
     id: flow.id,
     name: flow.name,
     slug: flow.slug,
+    anchor: flowAnchor(flow.streamSlug, flow.slug),
+    streamName: flow.streamName,
+    streamSlug: flow.streamSlug,
     fileKey: flow.fileKey,
     lastSyncedAt: flow.lastSyncedAt,
-    sections: [...grouped].map(([name, list]) => ({ name, screens: list })),
+    screens: rows.map((row) => ({
+      ...row,
+      driftState: row.driftState as DriftState,
+      hotspots: hotspotsByScreen.get(row.id) ?? [],
+    })),
     flowEndNodeIds: flowEnds.map((row) => row.nodeId),
     prototypes: prototypeRows.map((row) => ({
       nodeId: row.nodeId,
       name: row.name,
-      section: row.section,
       startsOn: row.screenId
         ? {
             id: row.screenId,
@@ -337,7 +390,6 @@ export async function getFlowBySlug(slug: string): Promise<FlowDetail | null> {
 export interface ScreenDetail {
   id: string;
   name: string;
-  section: string | null;
   description: string | null;
   imageUrl: string | null;
   imageWidth: number | null;
@@ -348,8 +400,12 @@ export interface ScreenDetail {
   driftCheckedAt: Date | null;
   textContent: string | null;
   archivedAt: Date | null;
+  /** The flow this screen belongs to — a page of its stream's Figma file. */
+  flowId: string;
   flowName: string;
-  flowSlug: string;
+  /** Where that flow's rail sits on the home page. */
+  flowAnchor: string;
+  streamName: string;
   texts: TextBox[];
 }
 
@@ -367,7 +423,6 @@ export async function getScreenById(id: string): Promise<ScreenDetail | null> {
     .select({
       id: screens.id,
       name: screens.name,
-      section: screens.section,
       description: screens.description,
       imageUrl: screens.imageUrl,
       imageWidth: screens.imageWidth,
@@ -378,11 +433,15 @@ export async function getScreenById(id: string): Promise<ScreenDetail | null> {
       driftCheckedAt: screens.driftCheckedAt,
       textContent: screens.textContent,
       archivedAt: screens.archivedAt,
+      flowId: flows.id,
       flowName: flows.name,
       flowSlug: flows.slug,
+      streamName: streams.name,
+      streamSlug: streams.slug,
     })
     .from(screens)
     .innerJoin(flows, eq(flows.id, screens.flowId))
+    .innerJoin(streams, eq(streams.id, flows.streamId))
     .where(eq(screens.id, id))
     .limit(1);
 
@@ -399,15 +458,20 @@ export async function getScreenById(id: string): Promise<ScreenDetail | null> {
     .from(screenTexts)
     .where(eq(screenTexts.screenId, id));
 
-  return { ...row, texts } as ScreenDetail;
+  return {
+    ...row,
+    driftState: row.driftState as DriftState,
+    flowAnchor: flowAnchor(row.streamSlug, row.flowSlug),
+    texts,
+  };
 }
 
 export interface SearchHit {
   id: string;
   name: string;
+  /** The page it is documented on, and the file that page belongs to. */
   flowName: string;
-  flowSlug: string;
-  section: string | null;
+  streamName: string;
   imageUrl: string | null;
   imageWidth: number | null;
   imageHeight: number | null;
@@ -438,18 +502,19 @@ export async function searchScreens(query: string): Promise<SearchHit[]> {
     SELECT
       s.id,
       s.name,
-      s.section,
       s.image_url        AS "imageUrl",
       s.image_width      AS "imageWidth",
       s.image_height     AS "imageHeight",
       f.name             AS "flowName",
-      f.slug             AS "flowSlug",
+      st.name            AS "streamName",
       ts_rank(s.search_vector, q) AS rank
     FROM screens s
-    JOIN flows f ON f.id = s.flow_id,
+    JOIN flows f ON f.id = s.flow_id
+    JOIN streams st ON st.id = f.stream_id,
          websearch_to_tsquery('simple', ${trimmed}) q
     WHERE s.archived_at IS NULL
       AND f.archived_at IS NULL
+      AND st.archived_at IS NULL
       AND s.search_vector @@ q
     ORDER BY rank DESC, s.name ASC
     LIMIT ${SEARCH_LIMIT}
@@ -473,20 +538,21 @@ export async function searchScreens(query: string): Promise<SearchHit[]> {
     SELECT
       s.id,
       s.name,
-      s.section,
       s.image_url    AS "imageUrl",
       s.image_width  AS "imageWidth",
       s.image_height AS "imageHeight",
       f.name         AS "flowName",
-      f.slug         AS "flowSlug",
+      st.name        AS "streamName",
       GREATEST(
         similarity(s.name, ${trimmed}),
         similarity(coalesce(s.text_content, ''), ${trimmed})
       ) AS rank
     FROM screens s
     JOIN flows f ON f.id = s.flow_id
+    JOIN streams st ON st.id = f.stream_id
     WHERE s.archived_at IS NULL
       AND f.archived_at IS NULL
+      AND st.archived_at IS NULL
       AND (s.name ILIKE ${pattern} OR s.text_content ILIKE ${pattern})
     ORDER BY rank DESC, s.name ASC
     LIMIT ${SEARCH_LIMIT}
@@ -553,7 +619,17 @@ async function withMatchedTexts(
   }));
 }
 
+/** One page of one file, as the admin table lists it. */
 export interface AdminFlowStatus {
+  id: string;
+  name: string;
+  lastSyncedAt: Date | null;
+  screenCount: number;
+  driftCount: number;
+  archivedAt: Date | null;
+}
+
+export interface AdminStreamStatus {
   id: string;
   name: string;
   slug: string;
@@ -561,22 +637,38 @@ export interface AdminFlowStatus {
   syncError: string | null;
   lastSyncedAt: Date | null;
   lastModified: Date | null;
-  screenCount: number;
-  driftCount: number;
   archivedAt: Date | null;
+  flows: AdminFlowStatus[];
 }
 
-/** Not cached — the admin page exists to show current state. */
-export async function getAdminStatus(): Promise<AdminFlowStatus[]> {
-  const rows = await db
+/**
+ * Not cached — the admin page exists to show current state.
+ *
+ * Two queries and a join in memory rather than one grouped query: the counts
+ * are per flow now, and rolling them up per stream in SQL as well would mean
+ * either a second pass or double-counting screens across the join.
+ */
+export async function getAdminStatus(): Promise<AdminStreamStatus[]> {
+  const streamRows = await db
+    .select({
+      id: streams.id,
+      name: streams.name,
+      slug: streams.slug,
+      syncStatus: streams.syncStatus,
+      syncError: streams.syncError,
+      lastSyncedAt: streams.lastSyncedAt,
+      lastModified: streams.lastModified,
+      archivedAt: streams.archivedAt,
+    })
+    .from(streams)
+    .orderBy(asc(streams.name));
+
+  const flowRows = await db
     .select({
       id: flows.id,
+      streamId: flows.streamId,
       name: flows.name,
-      slug: flows.slug,
-      syncStatus: flows.syncStatus,
-      syncError: flows.syncError,
       lastSyncedAt: flows.lastSyncedAt,
-      lastModified: flows.lastModified,
       archivedAt: flows.archivedAt,
       screenCount: sql<number>`count(${screens.id}) FILTER (WHERE ${screens.archivedAt} IS NULL)::int`,
       driftCount: sql<number>`count(${screens.id}) FILTER (WHERE ${screens.archivedAt} IS NULL AND ${screens.driftState} IN ('content_changed','source_changed'))::int`,
@@ -584,7 +676,17 @@ export async function getAdminStatus(): Promise<AdminFlowStatus[]> {
     .from(flows)
     .leftJoin(screens, eq(screens.flowId, flows.id))
     .groupBy(flows.id)
-    .orderBy(asc(flows.name));
+    .orderBy(asc(flows.position));
 
-  return rows;
+  const byStream = new Map<string, AdminFlowStatus[]>();
+  for (const { streamId, ...flow } of flowRows) {
+    const list = byStream.get(streamId) ?? [];
+    list.push(flow);
+    byStream.set(streamId, list);
+  }
+
+  return streamRows.map((stream) => ({
+    ...stream,
+    flows: byStream.get(stream.id) ?? [],
+  }));
 }

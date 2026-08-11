@@ -10,7 +10,7 @@ import { del, put } from "@vercel/blob";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 
 import { db } from "@/db";
-import { flows, screenClips, screens } from "@/db/schema";
+import { flows, screenClips, screens, streams } from "@/db/schema";
 import { blobToken } from "@/lib/env";
 import { sha256 } from "@/lib/figma/extract";
 import type { ClipboardHeader } from "@/lib/figma/clipboard";
@@ -42,8 +42,12 @@ export async function captureClip(input: {
     })
     .from(screens)
     .innerJoin(flows, eq(flows.id, screens.flowId))
+    .innerJoin(streams, eq(streams.id, flows.streamId))
     .where(
-      and(eq(flows.fileKey, header.fileKey), eq(screens.nodeId, header.nodeId)),
+      and(
+        eq(streams.fileKey, header.fileKey),
+        eq(screens.nodeId, header.nodeId),
+      ),
     )
     .limit(1);
 
@@ -51,7 +55,7 @@ export async function captureClip(input: {
     return {
       ok: false,
       reason:
-        "That frame isn't a published screen yet. Publish this file first, " +
+        "That frame isn't a published screen yet. Publish its page first, " +
         "then capture it.",
     };
   }
@@ -199,12 +203,13 @@ export type CaptureState = "missing" | "stale" | "captured";
 export interface CaptureStatusItem {
   nodeId: string;
   name: string;
-  section: string | null;
+  /** The page it sits on, so the list reads as the file's own structure. */
+  flowName: string;
   state: CaptureState;
 }
 
 export interface CaptureStatus {
-  flowName: string;
+  streamName: string;
   items: CaptureStatusItem[];
 }
 
@@ -214,40 +219,46 @@ export interface CaptureStatus {
  * Drives the plugin's worklist. Capture is manual and irreducibly so — Figma
  * only surrenders a copyable payload on a real ⌘C — so the least this can do
  * is make sure nobody has to remember where they got to.
+ *
+ * Deliberately the whole file rather than the open page, unlike publishing:
+ * clicking a row jumps the viewport to that frame wherever it lives, so a
+ * file-wide list is a worklist a designer can actually work down.
  */
 export async function getCaptureStatus(
   fileKey: string,
 ): Promise<CaptureStatus | null> {
   const rows = await db
     .select({
+      streamName: streams.name,
       flowName: flows.name,
       nodeId: screens.nodeId,
       name: screens.name,
-      section: screens.section,
       imageHash: screens.imageHash,
       capturedImageHash: screenClips.capturedImageHash,
       hasClip: sql<boolean>`${screenClips.screenId} IS NOT NULL`,
     })
     .from(screens)
     .innerJoin(flows, eq(flows.id, screens.flowId))
+    .innerJoin(streams, eq(streams.id, flows.streamId))
     .leftJoin(screenClips, eq(screenClips.screenId, screens.id))
     .where(
       and(
-        eq(flows.fileKey, fileKey),
+        eq(streams.fileKey, fileKey),
         isNull(screens.archivedAt),
         isNull(flows.archivedAt),
+        isNull(streams.archivedAt),
       ),
     )
-    .orderBy(asc(screens.position));
+    .orderBy(asc(flows.position), asc(screens.position));
 
   if (rows.length === 0) return null;
 
   return {
-    flowName: rows[0].flowName,
+    streamName: rows[0].streamName,
     items: rows.map((row) => ({
       nodeId: row.nodeId,
       name: row.name,
-      section: row.section,
+      flowName: row.flowName,
       state: !row.hasClip
         ? "missing"
         : row.capturedImageHash !== row.imageHash

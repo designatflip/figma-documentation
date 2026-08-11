@@ -48,7 +48,7 @@ export async function GET(request: Request) {
       {
         ok: false,
         error:
-          "This file has no published screens. Publish it first, then capture.",
+          "This file has no published screens. Publish a page first, then capture.",
       },
       { status: 404, headers: corsHeaders },
     );

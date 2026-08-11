@@ -41,7 +41,7 @@ const BUFFER_RE = marker("figma");
 const NODE_ID_RE = /\d+:\d+/g;
 
 export interface ClipboardHeader {
-  /** The Figma file the frame was copied from. Matches `flows.file_key`. */
+  /** The Figma file the frame was copied from. Matches `streams.file_key`. */
   fileKey: string;
   /** The single copied node, e.g. `1:8874`. Matches `screens.node_id`. */
   nodeId: string;

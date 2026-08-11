@@ -8,7 +8,7 @@ import { ScreenImage } from "@/components/screen-image";
 import { ScreenStrip } from "@/components/screen-strip";
 import { ViewTabs } from "@/components/view-tabs";
 import { getClipStatus, getFlowClipStatuses } from "@/lib/clips";
-import { getFlowBySlug, type ScreenDetail as Screen } from "@/lib/queries";
+import { getFlowById, type ScreenDetail as Screen } from "@/lib/queries";
 
 export interface ScreenDetailProps {
   screen: Screen;
@@ -77,7 +77,7 @@ export async function ScreenDetail({
   // Cached under the same tag as the screen itself, so this is a cheap second
   // read of data the catalogue has usually already filled. Null for an archived
   // screen whose flow is gone — which is also a flow with nothing to play.
-  const flow = await getFlowBySlug(screen.flowSlug);
+  const flow = await getFlowById(screen.flowId);
   const prototypes = flow?.prototypes ?? [];
   // A shared `?view=prototype` link outlives the prototype it pointed at —
   // starting points come and go in Figma — so the render is the fallback rather
@@ -88,11 +88,9 @@ export async function ScreenDetail({
   const startNodeId =
     start ?? prototypes.find((p) => p.startsOn?.id === screen.id)?.nodeId;
 
-  // Sections are the catalogue's grouping, and the strip is one continuous
-  // run — a flow read end to end, in sync order, which is how the screens are
-  // already sorted within each section, and how the home page's rails read it.
-  const flowScreens =
-    flow?.sections.flatMap((section) => section.screens) ?? [];
+  // One continuous run — the flow read end to end, in the order its frames sit
+  // on the Figma page, which is how the home page's rail reads it too.
+  const flowScreens = flow?.screens ?? [];
   // An archived screen keeps its page after its flow is gone, and a flow with
   // no live screens has no run to show: either way it falls back to its own
   // render rather than an empty rail.
@@ -172,7 +170,7 @@ export async function ScreenDetail({
     showPrototype && flow ? (
       <PrototypePlayer
         flowName={flow.name}
-        flowSlug={flow.slug}
+        streamSlug={flow.streamSlug}
         fileKey={flow.fileKey}
         prototypes={prototypes}
         selectedNodeId={startNodeId}
@@ -339,11 +337,17 @@ export async function ScreenDetail({
             and no frame in it is picked, so a line naming one screen would be
             describing something the reader cannot see the modal doing. */}
         <div className="min-w-0">
+          {/* The stream over the flow, in the shape the catalogue files them:
+              a product area, then the flow inside it. Quiet, because the run of
+              frames below is a flow and that is what the reader is looking at. */}
+          <p className="truncate text-xs uppercase tracking-wide text-muted">
+            {screen.streamName}
+          </p>
           <div className="flex min-w-0 items-center">
             <h1 className="truncate text-xl font-semibold tracking-tight">
               {/* Out to the flow's rail on the home page: the same run of
                   frames this panel is showing, in the listing behind it. */}
-              <Link href={`/#${screen.flowSlug}`} className="hover:underline">
+              <Link href={`/#${screen.flowAnchor}`} className="hover:underline">
                 {screen.flowName}
               </Link>
             </h1>

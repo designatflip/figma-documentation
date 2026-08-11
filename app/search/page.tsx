@@ -68,7 +68,10 @@ async function Results({ searchParams }: { searchParams: Props["searchParams"] }
               imageUrl={hit.imageUrl}
               imageWidth={hit.imageWidth}
               imageHeight={hit.imageHeight}
-              subtitle={hit.flowName}
+              // Where it lives, in the catalogue's own order: the stream, then
+              // the flow inside it. A screen name alone rarely says which
+              // product it belongs to.
+              subtitle={`${hit.streamName} · ${hit.flowName}`}
               highlights={hit.matchedTexts}
               query={query}
             />

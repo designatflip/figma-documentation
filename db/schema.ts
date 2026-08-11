@@ -21,13 +21,18 @@ const tsvector = customType<{ data: string; driverData: string }>({
 });
 
 /**
- * A flow is a Figma *file* inside the documentation project.
+ * A stream is a Figma *file* inside the documentation project — a product area
+ * like "Payment & Transfers", which is how the design team files its work.
  *
- * There is deliberately no separate `figma_files` table — publishing a flow
- * means creating a file in the project, so the two concepts are one row.
+ * There is deliberately no separate `figma_files` table — documenting a stream
+ * means putting a file in the project, so the two concepts are one row.
+ *
+ * This table was called `flows` until the catalogue grew a third level; see
+ * migration 0007, which renamed it rather than rebuilding it so that every
+ * screen link ever shared kept working.
  */
-export const flows = pgTable(
-  "flows",
+export const streams = pgTable(
+  "streams",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     fileKey: text("file_key").notNull(),
@@ -39,6 +44,9 @@ export const flows = pgTable(
      * Figma's `last_modified` for this file, as reported by the project
      * listing. The change gate: when this is unchanged we skip the file
      * entirely without a single further request.
+     *
+     * Only a whole-file sync may stamp this. A page publish deliberately
+     * leaves it alone — see `syncPage`.
      */
     lastModified: timestamp("last_modified", { withTimezone: true }),
     lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
@@ -51,20 +59,67 @@ export const flows = pgTable(
     archivedAt: timestamp("archived_at", { withTimezone: true }),
   },
   (t) => [
-    uniqueIndex("flows_file_key_idx").on(t.fileKey),
-    uniqueIndex("flows_slug_idx").on(t.slug),
+    uniqueIndex("streams_file_key_idx").on(t.fileKey),
+    uniqueIndex("streams_slug_idx").on(t.slug),
+    index("streams_archived_at_idx").on(t.archivedAt),
+  ],
+);
+
+/**
+ * A flow is a *page* inside a stream's Figma file — "Domestic Transfer",
+ * "Top Up E-Wallet". It is the unit designers actually work in and the unit
+ * they publish: a file runs to hundreds of screens, a page to a dozen.
+ */
+export const flows = pgTable(
+  "flows",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    streamId: uuid("stream_id")
+      .notNull()
+      .references(() => streams.id, { onDelete: "cascade" }),
+
+    /**
+     * Figma node id of the CANVAS, e.g. "120:8633". The durable identity of a
+     * page: a designer renaming one must not orphan its screens.
+     *
+     * Nullable only for rows migration 0007 rebuilt out of the old
+     * `screens.section` strings, where no page id was ever recorded. The next
+     * sync adopts those rows by name and stamps the id — see `resolveFlow`.
+     */
+    pageId: text("page_id"),
+    name: text("name").notNull(),
+    slug: text("slug").notNull(),
+
+    lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
+
+    /** Page order within the file, which is the order Figma lists them in. */
+    position: integer("position").notNull().default(0),
+
+    /** Set when the page leaves the file. Never hard-deleted. */
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("flows_stream_page_idx").on(t.streamId, t.pageId),
+    // Slugs only have to be unique inside their stream: a flow is addressed as
+    // its stream's anchor plus its own, never on its own.
+    uniqueIndex("flows_stream_slug_idx").on(t.streamId, t.slug),
+    index("flows_stream_id_idx").on(t.streamId),
     index("flows_archived_at_idx").on(t.archivedAt),
   ],
 );
 
 /**
- * A prototype entry point in a flow file — one row per "Flow starting point"
- * pin Figma reports on a page.
+ * A prototype entry point in a flow — one row per "Flow starting point" pin
+ * Figma reports on the page.
  *
  * Rows exist only for starting points that land inside a published screen, so
  * the presence of a row is exactly the question the screen view asks: is there
  * a prototype worth offering here? Like everything else in the catalogue this is
  * derived from Figma on every sync and never authored.
+ *
+ * Figma reports starting points per page, which is why this hangs off a flow
+ * rather than a stream: publishing one page can rewrite exactly its own
+ * prototypes and leave every other page's alone.
  */
 export const flowPrototypes = pgTable(
   "flow_prototypes",
@@ -85,8 +140,6 @@ export const flowPrototypes = pgTable(
     screenNodeId: text("screen_node_id").notNull(),
     /** The starting point's label in Figma. Defaults to "Flow 1" there. */
     name: text("name").notNull(),
-    /** Page name within the flow file, matching `screens.section`. */
-    section: text("section"),
 
     position: integer("position").notNull().default(0),
   },
@@ -108,8 +161,6 @@ export const screens = pgTable(
     nodeId: text("node_id").notNull(),
     name: text("name").notNull(),
     slug: text("slug").notNull(),
-    /** Page name within the flow file. Optional sub-grouping. */
-    section: text("section"),
     /** Sourced from Figma's `devStatus.description`, not authored here. */
     description: text("description"),
 
@@ -152,6 +203,7 @@ export const screens = pgTable(
        || setweight(to_tsvector('simple', coalesce(text_content, '')), 'C')`,
     ),
 
+    /** Order within its flow, which is the order the frames sit on the page. */
     position: integer("position").notNull().default(0),
 
     /**
@@ -368,6 +420,7 @@ export const pluginTokens = pgTable(
   ],
 );
 
+export type Stream = typeof streams.$inferSelect;
 export type Flow = typeof flows.$inferSelect;
 export type FlowPrototype = typeof flowPrototypes.$inferSelect;
 export type Screen = typeof screens.$inferSelect;

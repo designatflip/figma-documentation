@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 
-import { FlowRails, FlowRailsSkeleton } from "@/components/flow-rails";
 import { ScreenLightbox } from "@/components/screen-lightbox";
+import { StreamRails, StreamRailsSkeleton } from "@/components/stream-rails";
 
 type Props = PageProps<"/screens/[id]">;
 
@@ -23,8 +23,8 @@ type Props = PageProps<"/screens/[id]">;
 export default function ScreenPage({ params, searchParams }: Props) {
   return (
     <>
-      <Suspense fallback={<FlowRailsSkeleton />}>
-        <FlowRails />
+      <Suspense fallback={<StreamRailsSkeleton />}>
+        <StreamRails />
       </Suspense>
 
       {/*

@@ -33,8 +33,6 @@ export interface ExtractedHotspot {
 export interface ExtractedFrame {
   nodeId: string;
   name: string;
-  /** Figma page the frame sits on. Becomes `screens.section`. */
-  section: string;
   /** From `devStatus.description`, when the designer wrote one. */
   description: string | null;
   texts: ExtractedText[];
@@ -53,28 +51,62 @@ export function isHidden(node: FigmaNode): boolean {
   return node.visible === false;
 }
 
+/** A page of a documentation file, which the catalogue publishes as a flow. */
+export interface ExtractedPage {
+  /** The CANVAS node itself, carrying the frames and the starting points. */
+  node: FigmaNode;
+  /** Figma node id of the page, e.g. "120:8633". A flow's durable identity. */
+  pageId: string;
+  name: string;
+  /** Page order within the file, which is the order Figma lists them in. */
+  position: number;
+}
+
 /**
- * Top-level frames on each page of a documentation file.
+ * Publishable pages of a documentation file.
  *
- * Only direct children of a page count as screens — nested frames are parts of
- * a screen, not screens themselves.
+ * The ignore prefix applies to page names exactly as it does to file and frame
+ * names, so a `_scratch` page is as unpublished as a `_scratch` frame — one
+ * escape hatch, spelled the same way at every level.
  */
-export function findScreenFrames(
+export function findPages(
   document: FigmaNode,
   ignorePattern: RegExp,
-): { page: FigmaNode; frame: FigmaNode; position: number }[] {
-  const found: { page: FigmaNode; frame: FigmaNode; position: number }[] = [];
-  let position = 0;
+): ExtractedPage[] {
+  const found: ExtractedPage[] = [];
 
   for (const page of document.children ?? []) {
     if (page.type !== "CANVAS" || isHidden(page)) continue;
+    const name = page.name.trim();
+    if (ignorePattern.test(name)) continue;
+    found.push({ node: page, pageId: page.id, name, position: found.length });
+  }
 
-    for (const frame of page.children ?? []) {
-      if (frame.type !== "FRAME") continue;
-      if (isHidden(frame)) continue;
-      if (ignorePattern.test(frame.name.trim())) continue;
-      found.push({ page, frame, position: position++ });
-    }
+  return found;
+}
+
+/**
+ * Top-level frames on one page, in the order Figma lists them.
+ *
+ * Only direct children of a page count as screens — nested frames are parts of
+ * a screen, not screens themselves.
+ *
+ * Positions restart at zero for each page, because a flow is a page now: the
+ * ordering that matters is the one within the run of screens the site draws,
+ * and numbering across the whole file would leave gaps in every page but the
+ * first as soon as one of them was published on its own.
+ */
+export function findPageFrames(
+  page: FigmaNode,
+  ignorePattern: RegExp,
+): { frame: FigmaNode; position: number }[] {
+  const found: { frame: FigmaNode; position: number }[] = [];
+
+  for (const frame of page.children ?? []) {
+    if (frame.type !== "FRAME") continue;
+    if (isHidden(frame)) continue;
+    if (ignorePattern.test(frame.name.trim())) continue;
+    found.push({ frame, position: found.length });
   }
 
   return found;
@@ -86,33 +118,30 @@ export interface ExtractedPrototype {
   nodeId: string;
   /** The starting point's own label in Figma, e.g. "Flow 1". */
   name: string;
-  /** Figma page the starting point sits on. */
-  section: string;
   /** Documented screen the start frame belongs to. Always a published one. */
   screenNodeId: string;
   position: number;
 }
 
 /**
- * Prototype entry points, one per "Flow starting point" pin in the file.
+ * Prototype entry points on one page, one per "Flow starting point" pin.
  *
- * Figma reports these per page, on the CANVAS node, and they are the only
- * reliable signal that a file is prototyped at all: a frame can carry a stray
- * inherited interaction without ever being reachable, but a starting point is
- * something a designer placed on purpose.
+ * Figma reports these on the CANVAS node, and they are the only reliable signal
+ * that a page is prototyped at all: a frame can carry a stray inherited
+ * interaction without ever being reachable, but a starting point is something a
+ * designer placed on purpose.
  *
  * A starting point is kept only when it lands inside a *published* screen.
  * That keeps one publishing rule rather than two — a prototype that begins on
  * a `_wip` frame is as unpublished as the frame itself, and the site can
  * always show the entry screen it opens on.
  */
-export function findPrototypeFlows(
-  document: FigmaNode,
+export function findPagePrototypes(
+  page: FigmaNode,
   ignorePattern: RegExp,
 ): ExtractedPrototype[] {
-  // Node ids are file-unique, so one map covers every page.
   const screenByDescendant = new Map<string, string>();
-  for (const { frame } of findScreenFrames(document, ignorePattern)) {
+  for (const { frame } of findPageFrames(page, ignorePattern)) {
     const mark = (node: FigmaNode) => {
       if (isHidden(node)) return;
       screenByDescendant.set(node.id, frame.id);
@@ -122,22 +151,16 @@ export function findPrototypeFlows(
   }
 
   const found: ExtractedPrototype[] = [];
-  let position = 0;
 
-  for (const page of document.children ?? []) {
-    if (page.type !== "CANVAS" || isHidden(page)) continue;
-
-    for (const point of page.flowStartingPoints ?? []) {
-      const screenNodeId = screenByDescendant.get(point.nodeId);
-      if (!screenNodeId) continue;
-      found.push({
-        nodeId: point.nodeId,
-        name: point.name.trim() || "Prototype",
-        section: page.name.trim(),
-        screenNodeId,
-        position: position++,
-      });
-    }
+  for (const point of page.flowStartingPoints ?? []) {
+    const screenNodeId = screenByDescendant.get(point.nodeId);
+    if (!screenNodeId) continue;
+    found.push({
+      nodeId: point.nodeId,
+      name: point.name.trim() || "Prototype",
+      screenNodeId,
+      position: found.length,
+    });
   }
 
   return found;
@@ -233,12 +256,13 @@ export function buildTextContent(texts: ExtractedText[]): string {
 }
 
 /**
- * `section` is passed in rather than read off a parent node: a frame fetched on
- * its own through `/v1/files/:key/nodes` arrives without its ancestors, so the
- * page it sits on is not recoverable from `frame` alone.
+ * Everything one documented frame contributes to a screen row.
+ *
+ * Which flow it belongs to is the caller's to know: a frame fetched on its own
+ * through `/v1/files/:key/nodes` arrives without its ancestors, so the page it
+ * sits on is not recoverable from `frame` alone.
  */
 export function extractFrame(
-  section: string,
   frame: FigmaNode,
   position: number,
 ): ExtractedFrame {
@@ -246,7 +270,6 @@ export function extractFrame(
   return {
     nodeId: frame.id,
     name: frame.name.trim(),
-    section: section.trim(),
     description: frame.devStatus?.description?.trim() || null,
     texts,
     textContent: buildTextContent(texts),

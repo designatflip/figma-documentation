@@ -24,7 +24,7 @@ export default function PluginPairPage({
           Connect the Figma plugin
         </h1>
         <p className="mt-1 max-w-prose text-sm text-muted">
-          This gives the plugin on this computer permission to publish flows as
+          This gives the plugin on this computer permission to publish pages as
           you. It can be revoked at any time from{" "}
           <a href="/admin" className="underline">
             Admin
