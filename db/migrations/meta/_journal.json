@@ -29,6 +29,27 @@
       "when": 1786384572168,
       "tag": "0003_fixed_katie_power",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1786390256380,
+      "tag": "0004_fresh_young_avengers",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1786421637254,
+      "tag": "0005_lazy_dazzler",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786430248411,
+      "tag": "0006_even_brood",
+      "breakpoints": true
     }
   ]
 }

@@ -23,7 +23,10 @@ figma.showUI(__html__, { width: 380, height: 640, themeColors: true });
  * them from having to identify the screen by hand.
  *
  * `isScreenFrame` mirrors `findScreenFrames` server-side: only a FRAME that is
- * a direct child of a page is a documented screen.
+ * a direct child of a page is a documented screen. It is also what gates the
+ * "Publish selected screen" button, and the only place that check can be made:
+ * the REST API returns a node fetched by id without its ancestors, so the
+ * server cannot re-derive parentage from the id alone.
  */
 function selectionInfo() {
   const selection = figma.currentPage.selection;
@@ -35,6 +38,9 @@ function selectionInfo() {
     name: node.name,
     type: node.type,
     isScreenFrame: node.type === "FRAME" && node.parent.type === "PAGE",
+    // Becomes `screens.section`. Sent for the same reason: unreachable from a
+    // single node server-side. A selection is always on the current page.
+    section: figma.currentPage.name,
   };
 }
 

@@ -129,7 +129,9 @@ export interface ClipStatus {
 }
 
 /** What the detail page needs to decide whether to offer the button. */
-export async function getClipStatus(screenId: string): Promise<ClipStatus | null> {
+export async function getClipStatus(
+  screenId: string,
+): Promise<ClipStatus | null> {
   const [row] = await db
     .select({
       capturedAt: screenClips.capturedAt,
@@ -149,6 +151,42 @@ export async function getClipStatus(screenId: string): Promise<ClipStatus | null
     byteSize: row.byteSize,
     stale: row.capturedImageHash !== row.imageHash,
   };
+}
+
+/**
+ * The same, for every screen in one flow at once, keyed by screen id.
+ *
+ * One query rather than one per screen: the lightbox lays a whole flow out and
+ * offers the same actions on each frame in it, and a flow runs to dozens — that
+ * is dozens of round trips on every open, for a decision each. A screen that
+ * has never been captured is simply absent, which is exactly the case where
+ * there is no button to offer.
+ */
+export async function getFlowClipStatuses(
+  flowId: string,
+): Promise<Map<string, ClipStatus>> {
+  const rows = await db
+    .select({
+      screenId: screenClips.screenId,
+      capturedAt: screenClips.capturedAt,
+      byteSize: screenClips.byteSize,
+      capturedImageHash: screenClips.capturedImageHash,
+      imageHash: screens.imageHash,
+    })
+    .from(screenClips)
+    .innerJoin(screens, eq(screens.id, screenClips.screenId))
+    .where(and(eq(screens.flowId, flowId), isNull(screens.archivedAt)));
+
+  return new Map(
+    rows.map((row) => [
+      row.screenId,
+      {
+        capturedAt: row.capturedAt,
+        byteSize: row.byteSize,
+        stale: row.capturedImageHash !== row.imageHash,
+      },
+    ]),
+  );
 }
 
 /**

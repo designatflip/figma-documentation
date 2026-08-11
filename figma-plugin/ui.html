@@ -37,8 +37,14 @@
   }
   .row {
     display: flex;
+    /* Three buttons do not always fit 380px at every UI scale, and a clipped
+       action is worse than a second line. */
+    flex-wrap: wrap;
     gap: 8px;
     align-items: center;
+  }
+  .hint {
+    margin: 8px 0 0;
   }
   .file {
     font-weight: 500;
@@ -167,8 +173,12 @@
     </p>
     <div class="row">
       <button id="publish">Publish this file</button>
+      <button id="publish-screen" class="secondary" disabled>
+        Publish selected screen
+      </button>
       <button id="disconnect" class="secondary">Disconnect</button>
     </div>
+    <p class="hint" id="publish-screen-hint"></p>
     <div id="result" class="result hidden"></div>
   </div>
 
@@ -242,6 +252,7 @@
     show("ready", state.fileKey !== null && Boolean(state.token));
     show("capture", true);
     el("file-name").textContent = state.fileName;
+    renderPublishScreen();
   }
 
   /**
@@ -337,9 +348,34 @@
 
   // --- Publishing ----------------------------------------------------------
 
-  el("publish").onclick = async () => {
-    el("publish").disabled = true;
-    setResult("result", "Publishing… this usually takes a few seconds.", false);
+  /**
+   * Whether one selected frame can be published on its own, and why not.
+   *
+   * The capture section below shows the selection too, but it is a long way
+   * down the panel and answers a different question. A disabled button with no
+   * explanation next to it is the thing worth avoiding here.
+   */
+  function renderPublishScreen() {
+    const selection = state.selection;
+    const ready = Boolean(selection && selection.isScreenFrame);
+
+    el("publish-screen").disabled = !ready;
+    el("publish-screen-hint").textContent = ready
+      ? `Selected: ${selection.name}. Publishes that frame alone — everything ` +
+        `else in the file is left as it is.`
+      : "Select one top-level frame on the canvas to publish it on its own.";
+  }
+
+  /**
+   * One request, two scopes: the body is the only difference between the two
+   * buttons. Every failure below — a revoked token, a partial success that
+   * still returns 200, an unreachable host — is identical for both, and having
+   * one copy of it is what stops them drifting apart.
+   */
+  async function publish(payload, pending) {
+    const buttons = [el("publish"), el("publish-screen")];
+    buttons.forEach((button) => (button.disabled = true));
+    setResult("result", pending, false);
 
     try {
       const response = await fetch(`${API_BASE}/api/sync`, {
@@ -348,7 +384,7 @@
           "Content-Type": "application/json",
           Authorization: `Bearer ${state.token}`,
         },
-        body: JSON.stringify({ fileKey: state.fileKey }),
+        body: JSON.stringify(payload),
       });
       const body = await response.json();
 
@@ -372,11 +408,39 @@
 
       setResult("result", body.message, false);
       post({ type: "notify", message: "Published to documentation." });
+
+      // A republished screen renders differently, which is precisely what makes
+      // a stored clip stale. The server has just worked that out; ask it again
+      // rather than guessing which rows changed.
+      await loadWorklist();
     } catch (error) {
       setResult("result", unreachable(`${API_BASE}/api/sync`, error), true);
     } finally {
       el("publish").disabled = false;
+      // Not unconditionally re-enabled: the selection may still be something
+      // that cannot be published on its own.
+      renderPublishScreen();
     }
+  }
+
+  el("publish").onclick = () =>
+    publish(
+      { fileKey: state.fileKey },
+      "Publishing… this usually takes a few seconds.",
+    );
+
+  el("publish-screen").onclick = () => {
+    const selection = state.selection;
+    if (!selection || !selection.isScreenFrame) return;
+
+    publish(
+      {
+        fileKey: state.fileKey,
+        nodeId: selection.id,
+        section: selection.section,
+      },
+      `Publishing “${selection.name}”…`,
+    );
   };
 
   el("disconnect").onclick = () => {
@@ -493,6 +557,7 @@
 
   function renderSelection(selection) {
     state.selection = selection;
+    renderPublishScreen();
     const node = el("selection");
 
     if (!selection) {

@@ -69,7 +69,7 @@ async function Results({ searchParams }: { searchParams: Props["searchParams"] }
               imageWidth={hit.imageWidth}
               imageHeight={hit.imageHeight}
               subtitle={hit.flowName}
-              snippetHtml={hit.snippet}
+              highlights={hit.matchedTexts}
               query={query}
             />
           </li>

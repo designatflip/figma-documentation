@@ -33,6 +33,21 @@ export const figmaEnv = () => ({
   ignorePattern: new RegExp(optional("DOCS_IGNORE_PATTERN", "^(_|wip|scratch)"), "i"),
 });
 
+/**
+ * OAuth client id that lets this site talk to an embedded prototype.
+ *
+ * Optional, and null is a working state: the embed still plays, it just keeps
+ * Figma's own control cluster instead of ours. Setting it is only half the
+ * job — the deployed origin has to be registered under the same OAuth app's
+ * **Embed API** origins, or Figma drops our messages exactly as if the id were
+ * missing. See SETUP.md §1.
+ *
+ * Not secret: it ends up in the iframe URL either way, and the origin
+ * allowlist is what does the actual gating.
+ */
+export const figmaEmbedClientId = () =>
+  process.env.FIGMA_EMBED_CLIENT_ID || null;
+
 export const databaseUrl = () => required("DATABASE_URL");
 
 export const blobToken = () => required("BLOB_READ_WRITE_TOKEN");

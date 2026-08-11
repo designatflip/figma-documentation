@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  boolean,
   customType,
   index,
   integer,
@@ -56,6 +57,45 @@ export const flows = pgTable(
   ],
 );
 
+/**
+ * A prototype entry point in a flow file — one row per "Flow starting point"
+ * pin Figma reports on a page.
+ *
+ * Rows exist only for starting points that land inside a published screen, so
+ * the presence of a row is exactly the question the screen view asks: is there
+ * a prototype worth offering here? Like everything else in the catalogue this is
+ * derived from Figma on every sync and never authored.
+ */
+export const flowPrototypes = pgTable(
+  "flow_prototypes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    flowId: uuid("flow_id")
+      .notNull()
+      .references(() => flows.id, { onDelete: "cascade" }),
+
+    /** Figma node id of the frame the prototype starts on. */
+    nodeId: text("node_id").notNull(),
+    /**
+     * The published screen containing that frame — usually the same node, but
+     * a starting point can sit on a nested frame. Resolved during extraction,
+     * where the tree is in hand, so the site can show the entry screen without
+     * guessing at the hierarchy.
+     */
+    screenNodeId: text("screen_node_id").notNull(),
+    /** The starting point's label in Figma. Defaults to "Flow 1" there. */
+    name: text("name").notNull(),
+    /** Page name within the flow file, matching `screens.section`. */
+    section: text("section"),
+
+    position: integer("position").notNull().default(0),
+  },
+  (t) => [
+    uniqueIndex("flow_prototypes_flow_node_idx").on(t.flowId, t.nodeId),
+    index("flow_prototypes_flow_id_idx").on(t.flowId),
+  ],
+);
+
 export const screens = pgTable(
   "screens",
   {
@@ -94,6 +134,17 @@ export const screens = pgTable(
 
     /** Every visible TEXT node, reading order, newline-joined. */
     textContent: text("text_content"),
+
+    /**
+     * Whether anything on the frame is wired to navigate elsewhere. A screen
+     * with nothing to tap is the end of its flow, which is how the prototype
+     * player knows to drop the forward arrow.
+     *
+     * Defaults true — the arrow shows — so a database that has not been
+     * re-synced since this column landed behaves as it did before rather than
+     * hiding controls on every screen at once.
+     */
+    navigates: boolean("navigates").notNull().default(true),
 
     searchVector: tsvector("search_vector").generatedAlwaysAs(
       sql`setweight(to_tsvector('simple', coalesce(name, '')), 'A')
@@ -145,6 +196,42 @@ export const screenTexts = pgTable(
     h: real("h").notNull(),
   },
   (t) => [index("screen_texts_screen_id_idx").on(t.screenId)],
+);
+
+/**
+ * One row per wired-up layer on a frame — the buttons, rows and cards a viewer
+ * can act on — with coordinates normalised 0–1 against the frame's bounding
+ * box, like `screen_texts`. Powers the hotspot overlay on the render.
+ *
+ * Rows are absent, not empty, for a screen synced before this table existed.
+ * The overlay simply draws nothing until that flow is re-synced, which is the
+ * same shape of degradation `navigates` was given a default for.
+ */
+export const screenHotspots = pgTable(
+  "screen_hotspots",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    screenId: uuid("screen_id")
+      .notNull()
+      .references(() => screens.id, { onDelete: "cascade" }),
+    nodeId: text("node_id"),
+    /** The layer's name in Figma, shown on hover. */
+    name: text("name"),
+    x: real("x").notNull(),
+    y: real("y").notNull(),
+    w: real("w").notNull(),
+    h: real("h").notNull(),
+    /** Figma's trigger type, e.g. `ON_CLICK`. Null on legacy wiring. */
+    trigger: text("trigger"),
+    /**
+     * Figma node the interaction leads to. Kept as the node id rather than a
+     * screen reference: it often points at a nested frame or an overlay that is
+     * not a documented screen of its own, so a foreign key would have to drop
+     * exactly the hotspots that are hardest to explain without one.
+     */
+    destinationNodeId: text("destination_node_id"),
+  },
+  (t) => [index("screen_hotspots_screen_id_idx").on(t.screenId)],
 );
 
 export const tags = pgTable(
@@ -282,8 +369,10 @@ export const pluginTokens = pgTable(
 );
 
 export type Flow = typeof flows.$inferSelect;
+export type FlowPrototype = typeof flowPrototypes.$inferSelect;
 export type Screen = typeof screens.$inferSelect;
 export type ScreenText = typeof screenTexts.$inferSelect;
+export type ScreenHotspot = typeof screenHotspots.$inferSelect;
 export type Tag = typeof tags.$inferSelect;
 export type PluginToken = typeof pluginTokens.$inferSelect;
 export type ScreenClip = typeof screenClips.$inferSelect;

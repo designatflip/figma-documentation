@@ -1,0 +1,1 @@
+ALTER TABLE "screens" ADD COLUMN "navigates" boolean DEFAULT true NOT NULL;
