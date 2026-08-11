@@ -2,7 +2,13 @@ import { revalidateTag } from "next/cache";
 import { NextResponse } from "next/server";
 
 import { corsHeaders, preflight } from "@/lib/cors";
-import { formatSyncSummary, syncProject } from "@/lib/figma/sync";
+import {
+  ScreenPublishError,
+  formatScreenSyncSummary,
+  formatSyncSummary,
+  syncProject,
+  syncScreen,
+} from "@/lib/figma/sync";
 import { authenticateSyncRequest } from "@/lib/plugin-auth";
 import { SyncBusyError, withSyncLock } from "@/lib/sync-lock";
 
@@ -30,16 +36,63 @@ export async function POST(request: Request) {
   const logs: string[] = [];
 
   // The plugin sends `figma.fileKey` so a designer publishes only the file they
-  // are looking at — seconds against the rate limit instead of minutes. Cron
-  // sends nothing and syncs everything.
-  const fileKey = await readFileKey(request);
+  // are looking at — seconds against the rate limit instead of minutes — and a
+  // `nodeId` as well when they are publishing one selected frame. Cron sends
+  // nothing and syncs everything.
+  const { fileKey, nodeId, section } = await readBody(request);
 
   const startedBy = caller.kind === "cron" ? "cron" : caller.email;
   if (caller.kind === "plugin") {
-    console.log(`[sync] triggered by ${caller.email}${fileKey ? ` for file ${fileKey}` : ""}`);
+    const scope = nodeId
+      ? ` for node ${nodeId} in file ${fileKey}`
+      : fileKey
+        ? ` for file ${fileKey}`
+        : "";
+    console.log(`[sync] triggered by ${caller.email}${scope}`);
   }
 
+  if (nodeId && !fileKey) {
+    return NextResponse.json(
+      { ok: false, error: "A screen publish needs the file it belongs to." },
+      { status: 400, headers: corsHeaders },
+    );
+  }
+
+  // Every cached read is tagged 'catalog'. `updateTag` is Server-Action-only,
+  // so a Route Handler uses revalidateTag; "max" gives stale-while-revalidate,
+  // which is right for a nightly job — nobody is waiting on this response.
+  //
+  // A designer who just pressed Publish *is* waiting, and is about to reload
+  // the site to check. `{ expire: 0 }` is what the docs prescribe for an
+  // external caller that needs data expired immediately.
+  const expireCatalog = () =>
+    revalidateTag("catalog", caller.kind === "plugin" ? { expire: 0 } : "max");
+
   try {
+    // One selected frame. It takes the same lease as a full run: both write the
+    // same rows, and a scoped publish landing halfway through a nightly sync is
+    // exactly the race the lock exists to prevent.
+    if (nodeId && fileKey) {
+      const summary = await withSyncLock(startedBy, () =>
+        syncScreen({
+          fileKey,
+          nodeId,
+          section: section ?? undefined,
+          onLog: (message) => {
+            logs.push(message);
+            console.log(`[sync] ${message}`);
+          },
+        }),
+      );
+
+      expireCatalog();
+
+      return NextResponse.json(
+        { ok: true, message: formatScreenSyncSummary(summary), ...summary, logs },
+        { headers: corsHeaders },
+      );
+    }
+
     const summary = await withSyncLock(startedBy, () =>
       syncProject({
         force: url.searchParams.get("force") === "1",
@@ -70,14 +123,7 @@ export async function POST(request: Request) {
       );
     }
 
-    // Every cached read is tagged 'catalog'. `updateTag` is Server-Action-only,
-    // so a Route Handler uses revalidateTag; "max" gives stale-while-revalidate,
-    // which is right for a nightly job — nobody is waiting on this response.
-    //
-    // A designer who just pressed Publish *is* waiting, and is about to reload
-    // the site to check. `{ expire: 0 }` is what the docs prescribe for an
-    // external caller that needs data expired immediately.
-    revalidateTag("catalog", caller.kind === "plugin" ? { expire: 0 } : "max");
+    expireCatalog();
 
     return NextResponse.json(
       {
@@ -97,6 +143,15 @@ export async function POST(request: Request) {
       );
     }
 
+    // A refusal, not a breakage: the message names what the designer should do
+    // instead, so it goes back verbatim rather than as a 500.
+    if (error instanceof ScreenPublishError) {
+      return NextResponse.json(
+        { ok: false, error: error.message, logs },
+        { status: error.status, headers: corsHeaders },
+      );
+    }
+
     const message = error instanceof Error ? error.message : String(error);
     console.error("[sync] fatal", error);
     return NextResponse.json(
@@ -106,16 +161,29 @@ export async function POST(request: Request) {
   }
 }
 
+interface SyncRequestBody {
+  fileKey: string | null;
+  nodeId: string | null;
+  section: string | null;
+}
+
 /**
- * Optional, and cron sends no body at all — so an absent or unparseable body is
- * not an error here.
+ * Every field is optional, and cron sends no body at all — so an absent or
+ * unparseable body is not an error here.
  */
-async function readFileKey(request: Request): Promise<string | null> {
+async function readBody(request: Request): Promise<SyncRequestBody> {
   try {
-    const body = await request.json();
-    const fileKey = (body as { fileKey?: unknown } | null)?.fileKey;
-    return typeof fileKey === "string" && fileKey.length > 0 ? fileKey : null;
+    const body = (await request.json()) as Record<string, unknown> | null;
+    return {
+      fileKey: readString(body?.fileKey),
+      nodeId: readString(body?.nodeId),
+      section: readString(body?.section),
+    };
   } catch {
-    return null;
+    return { fileKey: null, nodeId: null, section: null };
   }
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
 }

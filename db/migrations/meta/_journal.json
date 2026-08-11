@@ -43,6 +43,13 @@
       "when": 1786421637254,
       "tag": "0005_lazy_dazzler",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786430248411,
+      "tag": "0006_even_brood",
+      "breakpoints": true
     }
   ]
 }

@@ -100,6 +100,13 @@ async function main() {
         if (frame.sourceUrl) {
           console.log(`      source: ${frame.sourceUrl}`);
         }
+        if (frame.hotspots.length > 0) {
+          console.log(
+            `      hotspots (${frame.hotspots.length}): ${frame.hotspots
+              .slice(0, 8)
+              .join(", ")}${frame.hotspots.length > 8 ? " …" : ""}`,
+          );
+        }
         if (frame.textSample.length > 0) {
           console.log(
             `      text: ${frame.textSample.map((t) => JSON.stringify(t)).join(", ")}${

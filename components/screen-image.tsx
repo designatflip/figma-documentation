@@ -1,23 +1,13 @@
 import Image from "next/image";
 
-export interface TextBox {
-  content: string;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
-
-function matches(content: string, query: string): boolean {
-  return content.toLowerCase().includes(query.toLowerCase());
-}
+import type { TextBox } from "@/lib/queries";
+import { matchingBoxes, TextHighlightOverlay } from "./text-highlight-overlay";
 
 /**
  * The screenshot, with optional highlight boxes over matching copy.
  *
- * Coordinates were normalised to 0–1 against the frame's bounding box at sync
- * time, so they position purely in percentages — correct at any rendered width
- * with no measurement, no ref, and no client JavaScript.
+ * The boxes themselves live in `TextHighlightOverlay`, which the search cards
+ * draw too — one definition of what a highlight looks like and where it sits.
  */
 export function ScreenImage({
   src,
@@ -27,6 +17,9 @@ export function ScreenImage({
   texts = [],
   highlight,
   priority,
+  contain,
+  actions,
+  badge,
 }: {
   src: string | null;
   alt: string;
@@ -35,6 +28,25 @@ export function ScreenImage({
   texts?: TextBox[];
   highlight?: string;
   priority?: boolean;
+  /**
+   * Fit the render inside the viewport instead of filling its column. The
+   * wrapper still hugs the image exactly, so the percentage-positioned
+   * highlight boxes stay aligned.
+   */
+  contain?: boolean;
+  /**
+   * Overlaid on the render, inside the wrapper that hugs it — so an absolutely
+   * positioned bar lines up with the image and not with the column around it.
+   * The wrapper is a `group`, which is how a bar can reveal itself on hover.
+   */
+  actions?: React.ReactNode;
+  /**
+   * Pinned to the top-right corner of the render. For a marker that is a fact
+   * about the picture — drift — rather than something to act on: the corner is
+   * where the eye already is when it is looking at the frame, and unlike the
+   * bar below it never waits for a hover.
+   */
+  badge?: React.ReactNode;
 }) {
   if (!src) {
     return (
@@ -44,33 +56,29 @@ export function ScreenImage({
     );
   }
 
-  const term = highlight?.trim();
-  const boxes = term ? texts.filter((t) => matches(t.content, term)) : [];
+  const boxes = matchingBoxes(texts, highlight);
 
   return (
-    <div className="relative overflow-hidden rounded-lg border border-border bg-surface-muted">
+    <div
+      className={
+        "group relative overflow-hidden rounded-lg border border-border bg-surface-muted" +
+        (contain ? " mx-auto w-fit" : "")
+      }
+    >
       <Image
         src={src}
         alt={alt}
         width={width ?? 800}
         height={height ?? 1600}
-        className="h-auto w-full"
+        className={
+          contain ? "h-auto max-h-[70vh] w-auto max-w-full" : "h-auto w-full"
+        }
         priority={priority}
         sizes="(max-width: 1024px) 100vw, 60vw"
       />
-      {boxes.map((box, index) => (
-        <span
-          key={`${box.x}-${box.y}-${index}`}
-          aria-hidden
-          className="pointer-events-none absolute rounded-[2px] bg-accent/25 ring-2 ring-accent"
-          style={{
-            left: `${box.x * 100}%`,
-            top: `${box.y * 100}%`,
-            width: `${box.w * 100}%`,
-            height: `${box.h * 100}%`,
-          }}
-        />
-      ))}
+      <TextHighlightOverlay boxes={boxes} weight="thick" />
+      {badge && <div className="absolute right-3 top-3">{badge}</div>}
+      {actions}
     </div>
   );
 }

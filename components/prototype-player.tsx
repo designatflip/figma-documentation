@@ -16,6 +16,13 @@ export interface PrototypePlayerProps {
   selectedNodeId?: string;
   /** Screens with nothing to tap — where the flow ends. */
   flowEndNodeIds: string[];
+  /**
+   * Where switching starting point goes. The caller's, with no default: the
+   * player is mounted inside the screen view, and a picker that navigated to a
+   * URL of its own choosing would move the reader out from under the panel
+   * they are playing in.
+   */
+  startHref: (nodeId: string) => string;
 }
 
 /** Used only until a screen has been rendered — phone-shaped is the safe guess. */
@@ -54,6 +61,8 @@ export function PrototypePlayer({
   prototypes,
   selectedNodeId,
   flowEndNodeIds,
+  startHref = (nodeId) =>
+    `/flows/${flowSlug}?view=prototype&start=${encodeURIComponent(nodeId)}`,
 }: PrototypePlayerProps) {
   const selected =
     prototypes.find((p) => p.nodeId === selectedNodeId) ?? prototypes[0];
@@ -89,7 +98,7 @@ export function PrototypePlayer({
             return (
               <Link
                 key={prototype.nodeId}
-                href={`/flows/${flowSlug}?view=prototype&start=${encodeURIComponent(prototype.nodeId)}`}
+                href={startHref(prototype.nodeId)}
                 aria-current={active ? "true" : undefined}
                 className={
                   "rounded-full border px-3 py-1.5 text-sm transition " +

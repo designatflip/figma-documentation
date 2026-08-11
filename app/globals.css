@@ -17,9 +17,27 @@
   --border: #e5e5e9;
   --accent: #2f6df6;
   --accent-fg: #ffffff;
+  /**
+   * Prototype hotspots, painted in the accent like the search highlight — one
+   * colour for "the site is pointing at part of this render", whichever
+   * question put it there.
+   *
+   * An alias rather than a copy of the hex, so it follows `accent` through the
+   * dark theme and through any later change to it. Named all the same: the
+   * overlay and its switch ask for the thing they mean, and the day hotspots
+   * want their own colour, this line is the only edit.
+   */
+  --hotspot: var(--accent);
+  /* For warning text on our own surfaces. */
   --warning: #9a5b00;
-  --warning-bg: #fdf3e3;
-  --warning-border: #f0d9ae;
+  /**
+   * The filled pair is for the drift badge, which has to read at a glance in
+   * the corner of a render — where the backdrop is whatever the designer drew,
+   * so only a solid fill will do. It keeps that fill everywhere else it
+   * appears; see `DriftBadge`.
+   */
+  --warning-solid: #b4620a;
+  --warning-solid-fg: #ffffff;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -35,8 +53,8 @@
     --accent: #6f9bff;
     --accent-fg: #0b0b0d;
     --warning: #f0c07a;
-    --warning-bg: #2a2013;
-    --warning-border: #4a3a1f;
+    --warning-solid: #f0a93c;
+    --warning-solid-fg: #2a1c05;
   }
 }
 
@@ -51,9 +69,10 @@
   --color-border: var(--border);
   --color-accent: var(--accent);
   --color-accent-fg: var(--accent-fg);
+  --color-hotspot: var(--hotspot);
   --color-warning: var(--warning);
-  --color-warning-bg: var(--warning-bg);
-  --color-warning-border: var(--warning-border);
+  --color-warning-solid: var(--warning-solid);
+  --color-warning-solid-fg: var(--warning-solid-fg);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
@@ -62,6 +81,67 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+/**
+ * A horizontal scroller that says it scrolls: the frames dissolve into the edge
+ * they can keep going past, and the cue clears once that end is reached.
+ *
+ * Both fades come from the scroll-driven animation, and the un-animated element
+ * has clean edges. That is the point rather than an oversight: a run short
+ * enough not to overflow has an inactive scroll timeline, and a browser without
+ * scroll-driven animations has none either — both land on a plain edge, which
+ * is honest, instead of on a fade promising screens that are not there.
+ *
+ * Registered so the lengths interpolate. An unregistered custom property is a
+ * string to the animation engine, and would jump from one edge to the other at
+ * the halfway mark.
+ */
+@property --scroll-fade-start {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --scroll-fade-end {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+.scroll-fade {
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 var(--scroll-fade-start),
+    #000 calc(100% - var(--scroll-fade-end)),
+    transparent 100%
+  );
+  animation: scroll-fade-edges linear both;
+  animation-timeline: scroll(self inline);
+}
+
+/* Wide enough to read as a frame going under the edge rather than as a frame
+   with a soft border. The turns happen in the first and last few percent of the
+   travel, so the far edge is already promising more by the time the run has
+   moved at all. */
+@keyframes scroll-fade-edges {
+  0% {
+    --scroll-fade-start: 0px;
+    --scroll-fade-end: 5rem;
+  }
+  4% {
+    --scroll-fade-start: 5rem;
+    --scroll-fade-end: 5rem;
+  }
+  96% {
+    --scroll-fade-start: 5rem;
+    --scroll-fade-end: 5rem;
+  }
+  100% {
+    --scroll-fade-start: 5rem;
+    --scroll-fade-end: 0px;
+  }
 }
 
 /* ts_headline wraps matches in <mark>; style it to match the accent. */

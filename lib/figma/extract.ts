@@ -12,6 +12,24 @@ export interface ExtractedText {
   h: number;
 }
 
+/**
+ * A wired-up region of a frame — a button, a row, a card — positioned 0–1
+ * relative to that frame, like `ExtractedText`.
+ */
+export interface ExtractedHotspot {
+  nodeId: string;
+  /** The layer's own name in Figma, which is what a designer recognises. */
+  name: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** `ON_CLICK`, `ON_DRAG`… Null for the legacy `transitionNodeID` wiring. */
+  trigger: string | null;
+  /** Frame this leads to, when it leads anywhere. */
+  destinationNodeId: string | null;
+}
+
 export interface ExtractedFrame {
   nodeId: string;
   name: string;
@@ -24,6 +42,8 @@ export interface ExtractedFrame {
   textContent: string;
   /** Whether anything on the frame is wired to navigate somewhere else. */
   navigates: boolean;
+  /** Every tappable region, for the overlay drawn over the render. */
+  hotspots: ExtractedHotspot[];
   position: number;
 }
 
@@ -212,8 +232,13 @@ export function buildTextContent(texts: ExtractedText[]): string {
   return joined.join("\n").slice(0, MAX_TEXT_CONTENT);
 }
 
+/**
+ * `section` is passed in rather than read off a parent node: a frame fetched on
+ * its own through `/v1/files/:key/nodes` arrives without its ancestors, so the
+ * page it sits on is not recoverable from `frame` alone.
+ */
 export function extractFrame(
-  page: FigmaNode,
+  section: string,
   frame: FigmaNode,
   position: number,
 ): ExtractedFrame {
@@ -221,11 +246,12 @@ export function extractFrame(
   return {
     nodeId: frame.id,
     name: frame.name.trim(),
-    section: page.name.trim(),
+    section: section.trim(),
     description: frame.devStatus?.description?.trim() || null,
     texts,
     textContent: buildTextContent(texts),
     navigates: navigatesAway(frame),
+    hotspots: extractHotspots(frame),
     position,
   };
 }
@@ -257,6 +283,152 @@ export function navigatesAway(node: FigmaNode): boolean {
   }
 
   return (node.children ?? []).some(navigatesAway);
+}
+
+/**
+ * Triggers that fire without anybody touching anything.
+ *
+ * A timeout advances the prototype on its own and a media trigger waits for a
+ * video to finish, so drawing a box around either would promise a tap target
+ * that is not there.
+ */
+const UNTOUCHED_TRIGGERS = new Set([
+  "AFTER_TIMEOUT",
+  "ON_MEDIA_END",
+  "ON_MEDIA_HIT",
+]);
+
+/**
+ * A hotspot covering this much of the frame is the whole screen, not a target
+ * within it.
+ *
+ * Two real shapes land here: a frame wired to advance wherever you tap, and the
+ * full-bleed scrim under a bottom sheet or dialog. Both are worth knowing about
+ * and neither can be drawn as a box — the ring would land on the render's own
+ * edge, where it reads as chrome, and the fill would wash out every hotspot
+ * inside it. They are kept, and the overlay draws them as an edge instead.
+ *
+ * The threshold is compared against normalised area, so it is a fraction of the
+ * frame. Exported because the overlay has to recognise the same rows.
+ */
+export const FULL_BLEED_AREA = 0.9;
+
+/**
+ * Every region of `frame` a viewer can act on, for the overlay drawn over the
+ * render.
+ *
+ * Coordinates are normalised against the frame's bounding box exactly as
+ * `extractTexts` does, so the boxes position in percentages and need no
+ * measurement in the browser.
+ *
+ * The walk stops at the outermost wired layer rather than collecting every
+ * interaction in the subtree. A card whose inner button is also wired would
+ * otherwise draw two nested rings around one thing a viewer taps once, and the
+ * outer box is the honest one: it is the area that actually responds.
+ *
+ * A full-bleed hotspot is the exception on both counts: it is recorded, and the
+ * walk carries on past it, because what sits under a scrim is the sheet whose
+ * buttons are the interesting part. Only the outermost one is kept — a frame
+ * wired to advance *and* a scrim over it would otherwise mark the same edge
+ * twice.
+ */
+export function extractHotspots(frame: FigmaNode): ExtractedHotspot[] {
+  const box = frame.absoluteBoundingBox;
+  if (!box || box.width <= 0 || box.height <= 0) return [];
+
+  const collected: ExtractedHotspot[] = [];
+  collect(frame, box, collected, { fullBleedTaken: false });
+
+  // Same reading order as the text boxes, so a numbered or keyboard-ordered
+  // presentation of these later gets top-to-bottom for free.
+  collected.sort((a, b) => (Math.abs(a.y - b.y) > 0.01 ? a.y - b.y : a.x - b.x));
+  return collected;
+}
+
+function collect(
+  node: FigmaNode,
+  frameBox: BoundingBox,
+  out: ExtractedHotspot[],
+  state: { fullBleedTaken: boolean },
+) {
+  // Hidden branches are skipped for the reason the text walk skips them: an
+  // off variant's wiring is unreachable, and its children carry no `visible`
+  // flag of their own to catch further down.
+  if (isHidden(node)) return;
+
+  const hotspot = hotspotFor(node, frameBox);
+
+  if (hotspot) {
+    if (hotspot.w * hotspot.h < FULL_BLEED_AREA) {
+      out.push(hotspot);
+      // The outermost wired layer is the tap target; stop here.
+      return;
+    }
+    if (!state.fullBleedTaken) {
+      out.push(hotspot);
+      state.fullBleedTaken = true;
+    }
+  }
+
+  for (const child of node.children ?? []) collect(child, frameBox, out, state);
+}
+
+/** The node's own wiring, if it has any worth pointing at. */
+function hotspotFor(
+  node: FigmaNode,
+  frameBox: BoundingBox,
+): ExtractedHotspot | null {
+  const wiring = tapWiring(node);
+  if (!wiring) return null;
+
+  const b = node.absoluteBoundingBox;
+  // No geometry, nothing to draw. Rare, but a hotspot is only ever a rectangle.
+  if (!b || b.width <= 0 || b.height <= 0) return null;
+
+  return {
+    nodeId: node.id,
+    name: node.name.trim(),
+    x: (b.x - frameBox.x) / frameBox.width,
+    y: (b.y - frameBox.y) / frameBox.height,
+    w: b.width / frameBox.width,
+    h: b.height / frameBox.height,
+    ...wiring,
+  };
+}
+
+/**
+ * What this node does when acted on, or null when it does nothing.
+ *
+ * Broader than `navigatesAway` on purpose. That function answers "does the flow
+ * continue", so only navigation counts; this one answers "is there something
+ * here to press", and a button that opens a URL, closes an overlay or sets a
+ * variable is every bit as pressable as one that changes screen.
+ */
+function tapWiring(
+  node: FigmaNode,
+): Pick<ExtractedHotspot, "trigger" | "destinationNodeId"> | null {
+  for (const interaction of node.interactions ?? []) {
+    const trigger = interaction.trigger?.type ?? null;
+    if (trigger && UNTOUCHED_TRIGGERS.has(trigger)) continue;
+    if (!interaction.actions?.length) continue;
+
+    // The destination is whichever action has one — an interaction can pair a
+    // navigation with a variable change, and the navigation is the interesting
+    // half.
+    const destination = interaction.actions.find((a) => a.destinationId);
+    return {
+      trigger,
+      destinationNodeId: destination?.destinationId ?? null,
+    };
+  }
+
+  // Files authored before `interactions` existed carry only this, and they are
+  // the ones where a missing overlay would be least noticed.
+  if (node.transitionNodeID) {
+    return { trigger: null, destinationNodeId: node.transitionNodeID };
+  }
+
+  return null;
 }
 
 /**

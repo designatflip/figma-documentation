@@ -43,6 +43,12 @@ export interface InteractionAction {
 
 /** A trigger (tap, drag, hover…) paired with what it does. */
 export interface Interaction {
+  /**
+   * What sets the interaction off — `ON_CLICK`, `ON_DRAG`, `MOUSE_ENTER`,
+   * `AFTER_TIMEOUT` and so on. Read so a hotspot can say how it is reached,
+   * and so the ones nobody touches can be left out of the overlay.
+   */
+  trigger?: { type: string } | null;
   actions?: InteractionAction[];
 }
 

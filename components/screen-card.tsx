@@ -2,7 +2,10 @@ import Image from "next/image";
 import Link from "next/link";
 
 import type { DriftState } from "@/db/schema";
-import { DriftBadge } from "./drift-badge";
+import type { HotspotBox, TextBox } from "@/lib/queries";
+import { DriftBadge, hasDriftLabel } from "./drift-badge";
+import { HotspotOverlay } from "./hotspot-overlay";
+import { TextHighlightOverlay } from "./text-highlight-overlay";
 
 export interface ScreenCardProps {
   id: string;
@@ -12,13 +15,29 @@ export interface ScreenCardProps {
   imageHeight: number | null;
   subtitle?: string | null;
   driftState?: DriftState;
-  /** Pre-rendered `ts_headline` fragment; contains <mark> elements. */
-  snippetHtml?: string | null;
+  /**
+   * Tappable regions to outline on the render. Omitted by callers that have
+   * not loaded them — search results, where the answer is the copy that
+   * matched rather than what the screen does.
+   */
+  hotspots?: HotspotBox[];
+  /**
+   * Copy on the render that contains the search term, outlined on the
+   * thumbnail. The same boxes the detail view draws, so opening a result keeps
+   * pointing at what the card pointed at.
+   */
+  highlights?: TextBox[];
   /**
    * Search passes the active query through so the detail page can draw
    * highlight boxes over the matching copy.
    */
   query?: string;
+  /**
+   * Carry "the reader switched the overlay off" into the screen this opens.
+   * The lightbox shows the same flow the card came from, with the same boxes
+   * over it, so arriving there would otherwise switch them back on.
+   */
+  hotspotsOff?: boolean;
 }
 
 export function ScreenCard({
@@ -29,19 +48,23 @@ export function ScreenCard({
   imageHeight,
   subtitle,
   driftState,
-  snippetHtml,
+  hotspots = [],
+  highlights = [],
   query,
+  hotspotsOff,
 }: ScreenCardProps) {
-  const href = query
-    ? `/screens/${id}?q=${encodeURIComponent(query)}`
-    : `/screens/${id}`;
+  const search = new URLSearchParams();
+  if (query) search.set("q", query);
+  if (hotspotsOff) search.set("hotspots", "off");
+  const params = search.toString();
+  const href = `/screens/${id}${params ? `?${params}` : ""}`;
 
   return (
     <Link
       href={href}
-      className="group flex flex-col gap-2 rounded-lg outline-offset-4 focus-visible:outline-2 focus-visible:outline-accent"
+      className="group flex flex-col gap-2 rounded-3xl outline-offset-4 focus-visible:outline-2 focus-visible:outline-accent"
     >
-      <div className="relative overflow-hidden rounded-lg border border-border bg-surface-muted transition group-hover:border-accent">
+      <div className="relative overflow-hidden rounded-3xl border border-border bg-surface-muted transition group-hover:border-accent">
         {imageUrl ? (
           <Image
             src={imageUrl}
@@ -56,21 +79,22 @@ export function ScreenCard({
             No render
           </div>
         )}
+        {/* Inside the wrapper that hugs the image, so the percentage-positioned
+            boxes line up with the render and not with the grid column. */}
+        {imageUrl && <HotspotOverlay hotspots={hotspots} />}
+        {imageUrl && <TextHighlightOverlay boxes={highlights} />}
+        {/* On the render rather than under the name: drift is a fact about the
+            picture, and a grid of thumbnails is scanned by picture. */}
+        {driftState && hasDriftLabel(driftState) && (
+          <div className="absolute right-2 top-2">
+            <DriftBadge state={driftState} />
+          </div>
+        )}
       </div>
 
       <div className="flex flex-col gap-1">
         <span className="text-sm font-medium leading-tight">{name}</span>
         {subtitle && <span className="text-xs text-muted">{subtitle}</span>}
-        {snippetHtml && (
-          <p
-            className="text-xs leading-snug text-muted"
-            // ts_headline output. The only markup Postgres emits here is the
-            // <mark> pair we configured via StartSel/StopSel, and the text it
-            // wraps is HTML-escaped by ts_headline itself.
-            dangerouslySetInnerHTML={{ __html: snippetHtml }}
-          />
-        )}
-        {driftState && <DriftBadge state={driftState} />}
       </div>
     </Link>
   );

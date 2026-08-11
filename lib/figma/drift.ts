@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 
 import { db } from "@/db";
 import { type DriftState, screens } from "@/db/schema";
@@ -22,7 +22,16 @@ const NODE_CHUNK_SIZE = 50;
 export async function checkDrift(
   client: FigmaClient,
   log: (message: string) => void,
+  /**
+   * Limit the pass to specific screens. Publishing one selected frame uses
+   * this: the badge it just invalidated has to be re-answered, but the
+   * file-wide pass is the slowest stage of a sync and would undo the point of
+   * publishing a single screen.
+   */
+  options: { screenIds?: string[] } = {},
 ): Promise<number> {
+  if (options.screenIds?.length === 0) return 0;
+
   const tracked = await db
     .select({
       id: screens.id,
@@ -38,6 +47,7 @@ export async function checkDrift(
         isNull(screens.archivedAt),
         isNotNull(screens.sourceFileKey),
         isNotNull(screens.sourceNodeId),
+        options.screenIds ? inArray(screens.id, options.screenIds) : undefined,
       ),
     );
 
