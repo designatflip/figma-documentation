@@ -1,5 +1,5 @@
 import { connection } from "next/server";
-import { Suspense } from "react";
+import { Fragment, Suspense } from "react";
 
 import { getAdminStatus } from "@/lib/queries";
 import { listPluginTokens } from "@/lib/plugin-auth";
@@ -12,9 +12,9 @@ export default function AdminPage() {
       <header className="mb-8">
         <h1 className="text-2xl font-semibold tracking-tight">Sync status</h1>
         <p className="mt-1 text-sm text-muted">
-          One row per file in the Figma documentation project. Publishing is
-          controlled entirely in Figma — there is no publish toggle here by
-          design.
+          One row per page in the Figma documentation project, grouped by the
+          file it belongs to. Publishing is controlled entirely in Figma — there
+          is no publish toggle here by design.
         </p>
       </header>
 
@@ -104,7 +104,7 @@ async function StatusTable() {
   if (rows.length === 0) {
     return (
       <p className="text-sm text-muted">
-        No flows yet. Run a sync to populate the catalogue.
+        Nothing documented yet. Publish a page from the plugin, or run a sync.
       </p>
     );
   }
@@ -119,41 +119,75 @@ async function StatusTable() {
             <th className="px-4 py-3 font-medium">Screens</th>
             <th className="px-4 py-3 font-medium">Drift</th>
             <th className="px-4 py-3 font-medium">Figma modified</th>
-            <th className="px-4 py-3 font-medium">Last synced</th>
+            <th className="px-4 py-3 font-medium">Last published</th>
           </tr>
         </thead>
         <tbody>
-          {rows.map((row) => (
-            <tr key={row.id} className="border-t border-border align-top">
-              <td className="px-4 py-3">
-                <span className={row.archivedAt ? "text-muted" : ""}>
-                  {row.name}
-                </span>
-                {row.archivedAt && (
-                  <span className="ml-2 text-xs text-muted">(archived)</span>
-                )}
-                {row.syncError && (
-                  <p className="mt-1 max-w-md text-xs text-warning">
-                    {row.syncError}
-                  </p>
-                )}
-              </td>
-              <td className="px-4 py-3">{row.syncStatus}</td>
-              <td className="px-4 py-3">{row.screenCount}</td>
-              <td className="px-4 py-3">
-                {row.driftCount > 0 ? (
-                  <span className="text-warning">{row.driftCount}</span>
-                ) : (
-                  <span className="text-muted">—</span>
-                )}
-              </td>
-              <td className="px-4 py-3 text-muted">
-                {row.lastModified?.toLocaleString() ?? "—"}
-              </td>
-              <td className="px-4 py-3 text-muted">
-                {row.lastSyncedAt?.toLocaleString() ?? "never"}
-              </td>
-            </tr>
+          {rows.map((stream) => (
+            /*
+              One group per file: a heading row carrying everything that is
+              true of the file — its sync status, its error, the change gate's
+              timestamp — then a row per page under it. The per-page numbers
+              are the ones worth scanning, since a page is what anybody
+              publishes.
+            */
+            <Fragment key={stream.id}>
+              <tr className="border-t border-border bg-surface-muted/50">
+                <td className="px-4 py-3 font-medium">
+                  <span className={stream.archivedAt ? "text-muted" : ""}>
+                    {stream.name}
+                  </span>
+                  {stream.archivedAt && (
+                    <span className="ml-2 text-xs font-normal text-muted">
+                      (archived)
+                    </span>
+                  )}
+                  {stream.syncError && (
+                    <p className="mt-1 max-w-md text-xs font-normal text-warning">
+                      {stream.syncError}
+                    </p>
+                  )}
+                </td>
+                <td className="px-4 py-3">{stream.syncStatus}</td>
+                <td className="px-4 py-3 text-muted" colSpan={2}>
+                  {stream.flows.length === 0
+                    ? "no pages published"
+                    : `${stream.flows.length} page${stream.flows.length === 1 ? "" : "s"}`}
+                </td>
+                <td className="px-4 py-3 text-muted">
+                  {stream.lastModified?.toLocaleString() ?? "—"}
+                </td>
+                <td className="px-4 py-3 text-muted">
+                  {stream.lastSyncedAt?.toLocaleString() ?? "never"}
+                </td>
+              </tr>
+
+              {stream.flows.map((flow) => (
+                <tr key={flow.id} className="border-t border-border align-top">
+                  <td className="px-4 py-3 pl-8">
+                    <span className={flow.archivedAt ? "text-muted" : ""}>
+                      {flow.name}
+                    </span>
+                    {flow.archivedAt && (
+                      <span className="ml-2 text-xs text-muted">(archived)</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-muted">—</td>
+                  <td className="px-4 py-3">{flow.screenCount}</td>
+                  <td className="px-4 py-3">
+                    {flow.driftCount > 0 ? (
+                      <span className="text-warning">{flow.driftCount}</span>
+                    ) : (
+                      <span className="text-muted">—</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-muted">—</td>
+                  <td className="px-4 py-3 text-muted">
+                    {flow.lastSyncedAt?.toLocaleString() ?? "never"}
+                  </td>
+                </tr>
+              ))}
+            </Fragment>
           ))}
         </tbody>
       </table>

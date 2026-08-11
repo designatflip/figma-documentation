@@ -167,12 +167,19 @@
 
   <div id="ready" class="hidden">
     <h1>Publish to documentation</h1>
+    <!--
+      The page, not the file. A documentation file is a product stream and runs
+      to hundreds of frames across a dozen pages; publishing the one you are
+      working in takes seconds against the rate limit instead of minutes, and
+      leaves every other flow exactly as it was.
+    -->
     <p>
-      Syncs <span class="file" id="file-name"></span> only. Frames named with
-      the ignore prefix stay unpublished.
+      Publishes <span class="file" id="page-name"></span> in
+      <span id="file-name"></span> — that page and nothing else. Frames named
+      with the ignore prefix stay unpublished.
     </p>
     <div class="row">
-      <button id="publish">Publish this file</button>
+      <button id="publish">Publish this page</button>
       <button id="publish-screen" class="secondary" disabled>
         Publish selected screen
       </button>
@@ -221,7 +228,7 @@
   // MUST be false before this is merged or published. The banner shouts when
   // it is not, because a plugin left in dev mode publishes nowhere and says
   // nothing useful about why.
-  const DEV = true;
+  const DEV = false;
   const API_BASE = DEV
     ? "http://localhost:3000"
     : "https://figma-documentation-red.vercel.app";
@@ -230,7 +237,13 @@
   const POLL_INTERVAL_MS = 2000;
   const POLL_TIMEOUT_MS = 5 * 60 * 1000;
 
-  let state = { token: null, fileKey: null, fileName: "", selection: null };
+  let state = {
+    token: null,
+    fileKey: null,
+    fileName: "",
+    page: null,
+    selection: null,
+  };
   let pollTimer = null;
 
   const el = (id) => document.getElementById(id);
@@ -252,6 +265,7 @@
     show("ready", state.fileKey !== null && Boolean(state.token));
     show("capture", true);
     el("file-name").textContent = state.fileName;
+    el("page-name").textContent = state.page ? state.page.name : "this page";
     renderPublishScreen();
   }
 
@@ -362,7 +376,7 @@
     el("publish-screen").disabled = !ready;
     el("publish-screen-hint").textContent = ready
       ? `Selected: ${selection.name}. Publishes that frame alone — everything ` +
-        `else in the file is left as it is.`
+        `else on this page is left as it is.`
       : "Select one top-level frame on the canvas to publish it on its own.";
   }
 
@@ -423,21 +437,26 @@
     }
   }
 
-  el("publish").onclick = () =>
+  el("publish").onclick = () => {
+    if (!state.page) return;
+
     publish(
-      { fileKey: state.fileKey },
-      "Publishing… this usually takes a few seconds.",
+      { fileKey: state.fileKey, pageId: state.page.id },
+      `Publishing “${state.page.name}”… this usually takes a few seconds.`,
     );
+  };
 
   el("publish-screen").onclick = () => {
     const selection = state.selection;
-    if (!selection || !selection.isScreenFrame) return;
+    if (!selection || !selection.isScreenFrame || !state.page) return;
 
     publish(
       {
         fileKey: state.fileKey,
+        // The page the frame sits on, so the server knows which flow to file
+        // it under. A selection is always on the current page.
+        pageId: state.page.id,
         nodeId: selection.id,
-        section: selection.section,
       },
       `Publishing “${selection.name}”…`,
     );
@@ -508,12 +527,13 @@
 
         li.append(mark, name);
 
-        if (item.state === "stale") {
-          const note = document.createElement("span");
-          note.className = "note";
-          note.textContent = "changed";
-          li.append(note);
-        }
+        // The list covers the whole file, so each row says which flow it is
+        // from — clicking it jumps there, possibly onto another page.
+        const page = document.createElement("span");
+        page.className = "note";
+        page.textContent =
+          item.state === "stale" ? `${item.flowName} · changed` : item.flowName;
+        li.append(page);
 
         // Clicking a row jumps to it, so a screen can be re-captured out of
         // order without fighting the queue.
@@ -651,7 +671,11 @@
     const message = event.data.pluginMessage;
     if (!message) return;
 
-    if (message.type === "selection") {
+    // Selection or page changed. Both move what the buttons would do, so both
+    // re-render the panel rather than only the line they are about.
+    if (message.type === "context") {
+      state.page = message.page;
+      render();
       renderSelection(message.selection);
       return;
     }
@@ -661,7 +685,7 @@
       // or renamed into a different node. Saying so beats a silent no-op.
       setResult(
         "capture-result",
-        "That frame is no longer in this file. Publish the file again to " +
+        "That frame is no longer in this file. Publish its page again to " +
           "bring the list back in step.",
         true,
       );
@@ -674,6 +698,7 @@
       token: message.token,
       fileKey: message.fileKey,
       fileName: message.fileName,
+      page: message.page,
       selection: null,
     };
     render();

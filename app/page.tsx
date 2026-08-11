@@ -1,12 +1,12 @@
 import { Suspense } from "react";
 
-import { FlowRails, FlowRailsSkeleton } from "@/components/flow-rails";
+import { StreamRails, StreamRailsSkeleton } from "@/components/stream-rails";
 
 export default function HomePage() {
   return (
     <>
-      <Suspense fallback={<FlowRailsSkeleton />}>
-        <FlowRails />
+      <Suspense fallback={<StreamRailsSkeleton />}>
+        <StreamRails />
       </Suspense>
     </>
   );

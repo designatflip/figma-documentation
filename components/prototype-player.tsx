@@ -7,9 +7,10 @@ import type { FlowPrototype } from "@/lib/queries";
 
 export interface PrototypePlayerProps {
   flowName: string;
-  flowSlug: string;
-  /** The Figma file every starting point below lives in. */
+  /** The Figma file every starting point below lives in… */
   fileKey: string;
+  /** …and its stream's slug, which is only cosmetic in a Figma deep link. */
+  streamSlug: string;
   /** Every starting point in the flow, in Figma's own order. */
   prototypes: FlowPrototype[];
   /** Node id of the one to play. Falls back to the first. */
@@ -56,13 +57,12 @@ const FALLBACK_ASPECT = 9 / 16;
  */
 export function PrototypePlayer({
   flowName,
-  flowSlug,
   fileKey,
+  streamSlug,
   prototypes,
   selectedNodeId,
   flowEndNodeIds,
-  startHref = (nodeId) =>
-    `/flows/${flowSlug}?view=prototype&start=${encodeURIComponent(nodeId)}`,
+  startHref,
 }: PrototypePlayerProps) {
   const selected =
     prototypes.find((p) => p.nodeId === selectedNodeId) ?? prototypes[0];
@@ -79,7 +79,7 @@ export function PrototypePlayer({
     ? figmaEmbedUrl(fileKey, selected.nodeId, { clientId })
     : null;
   const plainUrl = figmaEmbedUrl(fileKey, selected.nodeId);
-  const protoUrl = figmaProtoUrl(fileKey, flowSlug, selected.nodeId);
+  const protoUrl = figmaProtoUrl(fileKey, streamSlug, selected.nodeId);
 
   const { imageWidth, imageHeight } = selected.startsOn ?? {};
   // Both dimensions come from the same render, so the ratio is independent of

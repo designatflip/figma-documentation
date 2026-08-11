@@ -3,9 +3,11 @@ import { NextResponse } from "next/server";
 
 import { corsHeaders, preflight } from "@/lib/cors";
 import {
-  ScreenPublishError,
+  PublishError,
+  formatPageSyncSummary,
   formatScreenSyncSummary,
   formatSyncSummary,
+  syncPage,
   syncProject,
   syncScreen,
 } from "@/lib/figma/sync";
@@ -13,8 +15,9 @@ import { authenticateSyncRequest } from "@/lib/plugin-auth";
 import { SyncBusyError, withSyncLock } from "@/lib/sync-lock";
 
 /**
- * A full sync walks every changed flow file serially against a 10–20 req/min
- * ceiling, so it needs the long end of the function timeout.
+ * A full sync walks every changed file, page by page, serially against a
+ * 10–20 req/min ceiling, so it needs the long end of the function timeout.
+ * A page publish is three requests and never comes close.
  */
 export const maxDuration = 300;
 
@@ -35,25 +38,27 @@ export async function POST(request: Request) {
   const url = new URL(request.url);
   const logs: string[] = [];
 
-  // The plugin sends `figma.fileKey` so a designer publishes only the file they
-  // are looking at — seconds against the rate limit instead of minutes — and a
-  // `nodeId` as well when they are publishing one selected frame. Cron sends
-  // nothing and syncs everything.
-  const { fileKey, nodeId, section } = await readBody(request);
+  // The plugin sends `figma.fileKey` and the id of the page being looked at, so
+  // a designer publishes one flow — seconds against the rate limit instead of
+  // minutes — plus a `nodeId` when they are publishing one selected frame.
+  // Cron sends nothing and syncs everything.
+  const { fileKey, pageId, nodeId } = await readBody(request);
 
   const startedBy = caller.kind === "cron" ? "cron" : caller.email;
   if (caller.kind === "plugin") {
     const scope = nodeId
       ? ` for node ${nodeId} in file ${fileKey}`
-      : fileKey
-        ? ` for file ${fileKey}`
-        : "";
+      : pageId
+        ? ` for page ${pageId} in file ${fileKey}`
+        : fileKey
+          ? ` for file ${fileKey}`
+          : "";
     console.log(`[sync] triggered by ${caller.email}${scope}`);
   }
 
-  if (nodeId && !fileKey) {
+  if ((nodeId || pageId) && !fileKey) {
     return NextResponse.json(
-      { ok: false, error: "A screen publish needs the file it belongs to." },
+      { ok: false, error: "A scoped publish needs the file it belongs to." },
       { status: 400, headers: corsHeaders },
     );
   }
@@ -69,6 +74,11 @@ export async function POST(request: Request) {
     revalidateTag("catalog", caller.kind === "plugin" ? { expire: 0 } : "max");
 
   try {
+    const onLog = (message: string) => {
+      logs.push(message);
+      console.log(`[sync] ${message}`);
+    };
+
     // One selected frame. It takes the same lease as a full run: both write the
     // same rows, and a scoped publish landing halfway through a nightly sync is
     // exactly the race the lock exists to prevent.
@@ -77,11 +87,8 @@ export async function POST(request: Request) {
         syncScreen({
           fileKey,
           nodeId,
-          section: section ?? undefined,
-          onLog: (message) => {
-            logs.push(message);
-            console.log(`[sync] ${message}`);
-          },
+          pageId: pageId ?? undefined,
+          onLog,
         }),
       );
 
@@ -93,22 +100,34 @@ export async function POST(request: Request) {
       );
     }
 
+    // One page — the plugin's ordinary publish, and the only one a designer
+    // presses by hand.
+    if (pageId && fileKey) {
+      const summary = await withSyncLock(startedBy, () =>
+        syncPage({ fileKey, pageId, onLog }),
+      );
+
+      expireCatalog();
+
+      return NextResponse.json(
+        { ok: true, message: formatPageSyncSummary(summary), ...summary, logs },
+        { headers: corsHeaders },
+      );
+    }
+
     const summary = await withSyncLock(startedBy, () =>
       syncProject({
         force: url.searchParams.get("force") === "1",
         allowMassArchive: url.searchParams.get("allowMassArchive") === "1",
         skipDrift: url.searchParams.get("skipDrift") === "1",
         onlyFileKey: fileKey ?? undefined,
-        onLog: (message) => {
-          logs.push(message);
-          console.log(`[sync] ${message}`);
-        },
+        onLog,
       }),
     );
 
     // A file key that matches nothing leaves every counter at zero and reports
     // success, which reads as "published!" in the plugin. Say what happened.
-    if (fileKey && summary.flowsChecked === 0) {
+    if (fileKey && summary.streamsChecked === 0) {
       return NextResponse.json(
         {
           ok: false,
@@ -145,7 +164,7 @@ export async function POST(request: Request) {
 
     // A refusal, not a breakage: the message names what the designer should do
     // instead, so it goes back verbatim rather than as a 500.
-    if (error instanceof ScreenPublishError) {
+    if (error instanceof PublishError) {
       return NextResponse.json(
         { ok: false, error: error.message, logs },
         { status: error.status, headers: corsHeaders },
@@ -163,8 +182,8 @@ export async function POST(request: Request) {
 
 interface SyncRequestBody {
   fileKey: string | null;
+  pageId: string | null;
   nodeId: string | null;
-  section: string | null;
 }
 
 /**
@@ -176,11 +195,11 @@ async function readBody(request: Request): Promise<SyncRequestBody> {
     const body = (await request.json()) as Record<string, unknown> | null;
     return {
       fileKey: readString(body?.fileKey),
+      pageId: readString(body?.pageId),
       nodeId: readString(body?.nodeId),
-      section: readString(body?.section),
     };
   } catch {
-    return { fileKey: null, nodeId: null, section: null };
+    return { fileKey: null, pageId: null, nodeId: null };
   }
 }
 

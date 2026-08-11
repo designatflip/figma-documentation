@@ -38,14 +38,28 @@ function selectionInfo() {
     name: node.name,
     type: node.type,
     isScreenFrame: node.type === "FRAME" && node.parent.type === "PAGE",
-    // Becomes `screens.section`. Sent for the same reason: unreachable from a
-    // single node server-side. A selection is always on the current page.
-    section: figma.currentPage.name,
   };
 }
 
-function postSelection() {
-  figma.ui.postMessage({ type: "selection", selection: selectionInfo() });
+/**
+ * The page being looked at, which is the unit that gets published.
+ *
+ * A file is a product stream and runs to hundreds of frames; a page is one
+ * flow. The id is what the server keys the flow on — names change, and a
+ * renamed page must move its screens rather than orphan them — and it is
+ * unreachable server-side, since `/v1/files/:key/nodes` returns a subtree
+ * without its ancestors.
+ */
+function pageInfo() {
+  return { id: figma.currentPage.id, name: figma.currentPage.name };
+}
+
+function postContext() {
+  figma.ui.postMessage({
+    type: "context",
+    page: pageInfo(),
+    selection: selectionInfo(),
+  });
 }
 
 async function boot() {
@@ -58,13 +72,18 @@ async function boot() {
     // `enablePrivatePluginApi`. The UI explains that rather than failing oddly.
     fileKey: figma.fileKey || null,
     fileName: figma.root.name,
+    page: pageInfo(),
     selection: selectionInfo(),
   });
 }
 
 boot();
 
-figma.on("selectionchange", postSelection);
+figma.on("selectionchange", postContext);
+// Switching page changes what Publish would publish, so the panel has to say
+// so the moment it happens — otherwise the button quietly means something else
+// than it did a second ago.
+figma.on("currentpagechange", postContext);
 
 figma.ui.onmessage = async (message) => {
   switch (message.type) {
