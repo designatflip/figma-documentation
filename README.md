@@ -49,6 +49,8 @@ and no admin toggle.
 
 - **Publish a flow** — add a file to the documentation project
 - **Publish a screen** — duplicate a frame into one of those files
+- **Publish a prototype** — pin a flow starting point on a published screen;
+  the flow page grows a Screens / Prototype toggle
 - **Unpublish** — remove it; `archived_at` is set, the row and image are kept
 - **Descriptions** — come from Figma's `devStatus.description`
 

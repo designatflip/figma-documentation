@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  boolean,
   customType,
   index,
   integer,
@@ -56,6 +57,45 @@ export const flows = pgTable(
   ],
 );
 
+/**
+ * A prototype entry point in a flow file — one row per "Flow starting point"
+ * pin Figma reports on a page.
+ *
+ * Rows exist only for starting points that land inside a published screen, so
+ * the presence of a row is exactly the question the flow page asks: is there a
+ * prototype worth offering here? Like everything else in the catalogue this is
+ * derived from Figma on every sync and never authored.
+ */
+export const flowPrototypes = pgTable(
+  "flow_prototypes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    flowId: uuid("flow_id")
+      .notNull()
+      .references(() => flows.id, { onDelete: "cascade" }),
+
+    /** Figma node id of the frame the prototype starts on. */
+    nodeId: text("node_id").notNull(),
+    /**
+     * The published screen containing that frame — usually the same node, but
+     * a starting point can sit on a nested frame. Resolved during extraction,
+     * where the tree is in hand, so the site can show the entry screen without
+     * guessing at the hierarchy.
+     */
+    screenNodeId: text("screen_node_id").notNull(),
+    /** The starting point's label in Figma. Defaults to "Flow 1" there. */
+    name: text("name").notNull(),
+    /** Page name within the flow file, matching `screens.section`. */
+    section: text("section"),
+
+    position: integer("position").notNull().default(0),
+  },
+  (t) => [
+    uniqueIndex("flow_prototypes_flow_node_idx").on(t.flowId, t.nodeId),
+    index("flow_prototypes_flow_id_idx").on(t.flowId),
+  ],
+);
+
 export const screens = pgTable(
   "screens",
   {
@@ -94,6 +134,17 @@ export const screens = pgTable(
 
     /** Every visible TEXT node, reading order, newline-joined. */
     textContent: text("text_content"),
+
+    /**
+     * Whether anything on the frame is wired to navigate elsewhere. A screen
+     * with nothing to tap is the end of its flow, which is how the prototype
+     * player knows to drop the forward arrow.
+     *
+     * Defaults true — the arrow shows — so a database that has not been
+     * re-synced since this column landed behaves as it did before rather than
+     * hiding controls on every screen at once.
+     */
+    navigates: boolean("navigates").notNull().default(true),
 
     searchVector: tsvector("search_vector").generatedAlwaysAs(
       sql`setweight(to_tsvector('simple', coalesce(name, '')), 'A')
@@ -282,6 +333,7 @@ export const pluginTokens = pgTable(
 );
 
 export type Flow = typeof flows.$inferSelect;
+export type FlowPrototype = typeof flowPrototypes.$inferSelect;
 export type Screen = typeof screens.$inferSelect;
 export type ScreenText = typeof screenTexts.$inferSelect;
 export type Tag = typeof tags.$inferSelect;

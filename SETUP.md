@@ -51,6 +51,29 @@ Deliberately not needed: `file_metadata:read` (the `last_modified` change gate
 reads it from the project and file payloads, not `/meta`), comments, versions,
 and every library scope.
 
+### Prototype controls (optional)
+
+The prototype player draws its own prev / next / restart buttons on the stage.
+Driving them means sending messages into the embed, and Figma only opens that
+channel for an OAuth app that has claimed the origin doing the sending.
+
+1. **Figma → Settings → Security → OAuth apps → Create new app.** Only the
+   client id is used; the secret is never needed, since nothing here signs in
+   through Figma.
+2. In that app, open **Embed API → Add an embed origin** and add every origin
+   the player is served from — `http://localhost:3000` for development, plus
+   the production domain. An origin is scheme + host + port, no path.
+3. Put the client id in `FIGMA_EMBED_CLIENT_ID`, and push it up:
+
+   ```bash
+   npx vercel env add FIGMA_EMBED_CLIENT_ID production
+   ```
+
+Both halves are load-bearing and fail the same silent way. If the variable is
+unset, or the origin is not on that list, the player waits a few seconds, logs
+a warning to the browser console, and reloads the embed with Figma's own
+control cluster — the prototype still plays either way.
+
 ### Source links (optional but recommended)
 
 For each documented frame, attach a **Dev Resource** in Dev Mode pointing at the
@@ -400,10 +423,15 @@ record below is added there, not in Vercel.
    `CLERK_WEBHOOK_SIGNING_SECRET` — development and production endpoints have
    **different** secrets. Then `npx vercel --prod`; env changes need a redeploy.
 
-8. **Re-enable Standard Protection.** The custom domain stays public, deployment
+8. **Add the subdomain to the Figma OAuth app's embed origins** (§1, *Prototype
+   controls*). It is a different origin from the `.vercel.app` alias, so the
+   prototype player's buttons vanish on the new domain until you do — quietly,
+   since it falls back to Figma's own controls rather than erroring.
+
+9. **Re-enable Standard Protection.** The custom domain stays public, deployment
    URLs go back behind SSO.
 
-9. **Re-run the §9 curl checks** against the new domain.
+10. **Re-run the §9 curl checks** against the new domain.
 
 Consider also setting `ALLOWED_EMAIL_DOMAIN` explicitly in production. It
 defaults to `flip.id` in `lib/env.ts`, so behaviour is correct today, but this

@@ -2,7 +2,7 @@ import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { cacheLife, cacheTag } from "next/cache";
 
 import { db } from "@/db";
-import { flows, screens, screenTexts } from "@/db/schema";
+import { flowPrototypes, flows, screens, screenTexts } from "@/db/schema";
 import type { DriftState } from "@/db/schema";
 
 /**
@@ -68,13 +68,48 @@ export interface ScreenCard {
   driftState: DriftState;
 }
 
+/**
+ * A playable prototype.
+ *
+ * Deliberately no URLs. This whole result is cached for days under the
+ * `catalog` tag, and a Figma embed URL carries presentation parameters we
+ * tune far more often than the catalogue changes — baking them in here would
+ * mean a sync just to adjust how the player looks. The player builds them from
+ * `fileKey` and `nodeId` at render time.
+ */
+export interface FlowPrototype {
+  nodeId: string;
+  name: string;
+  section: string | null;
+  /** The screen it opens on. Null only if that screen has been unpublished. */
+  startsOn: {
+    id: string;
+    name: string;
+    imageUrl: string | null;
+    imageWidth: number | null;
+    imageHeight: number | null;
+  } | null;
+}
+
 export interface FlowDetail {
   id: string;
   name: string;
   slug: string;
+  /** The Figma file. Needed to address the flow's prototypes. */
+  fileKey: string;
   lastSyncedAt: Date | null;
   /** Grouped by Figma page. A single unnamed group means no sub-structure. */
   sections: { name: string | null; screens: ScreenCard[] }[];
+  /**
+   * Node ids of screens with nothing wired to tap — where a flow ends.
+   *
+   * Listed rather than flagged per screen because the only consumer is the
+   * prototype player, which is handed a node id by Figma and has to decide
+   * whether that is an ending, not walk the catalogue.
+   */
+  flowEndNodeIds: string[];
+  /** Empty for the many flows nobody has wired a prototype into. */
+  prototypes: FlowPrototype[];
 }
 
 export async function getFlowBySlug(slug: string): Promise<FlowDetail | null> {
@@ -105,6 +140,47 @@ export async function getFlowBySlug(slug: string): Promise<FlowDetail | null> {
     .where(and(eq(screens.flowId, flow.id), liveScreen()))
     .orderBy(asc(screens.position));
 
+  // Left join: a starting point outlives the screen it opens on for exactly
+  // one sync, and losing the entry thumbnail is no reason to hide a prototype
+  // that still plays perfectly well in Figma.
+  const prototypeRows = await db
+    .select({
+      nodeId: flowPrototypes.nodeId,
+      name: flowPrototypes.name,
+      section: flowPrototypes.section,
+      screenId: screens.id,
+      screenName: screens.name,
+      imageUrl: screens.imageUrl,
+      imageWidth: screens.imageWidth,
+      imageHeight: screens.imageHeight,
+    })
+    .from(flowPrototypes)
+    .leftJoin(
+      screens,
+      and(
+        eq(screens.flowId, flowPrototypes.flowId),
+        eq(screens.nodeId, flowPrototypes.screenNodeId),
+        liveScreen(),
+      ),
+    )
+    .where(eq(flowPrototypes.flowId, flow.id))
+    .orderBy(asc(flowPrototypes.position));
+
+  // Its own query rather than two more columns on the cards above: only the
+  // player wants this, and node ids on every card would cross to the client
+  // on every screen listing for nothing. The whole result is cached for days,
+  // so the extra round trip is paid once per sync, not per view.
+  const flowEnds = await db
+    .select({ nodeId: screens.nodeId })
+    .from(screens)
+    .where(
+      and(
+        eq(screens.flowId, flow.id),
+        liveScreen(),
+        eq(screens.navigates, false),
+      ),
+    );
+
   const grouped = new Map<string | null, ScreenCard[]>();
   for (const row of rows) {
     const key = row.section;
@@ -117,8 +193,24 @@ export async function getFlowBySlug(slug: string): Promise<FlowDetail | null> {
     id: flow.id,
     name: flow.name,
     slug: flow.slug,
+    fileKey: flow.fileKey,
     lastSyncedAt: flow.lastSyncedAt,
     sections: [...grouped].map(([name, list]) => ({ name, screens: list })),
+    flowEndNodeIds: flowEnds.map((row) => row.nodeId),
+    prototypes: prototypeRows.map((row) => ({
+      nodeId: row.nodeId,
+      name: row.name,
+      section: row.section,
+      startsOn: row.screenId
+        ? {
+            id: row.screenId,
+            name: row.screenName ?? row.name,
+            imageUrl: row.imageUrl,
+            imageWidth: row.imageWidth,
+            imageHeight: row.imageHeight,
+          }
+        : null,
+    })),
   };
 }
 

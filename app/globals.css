@@ -4,6 +4,14 @@
   --background: #ffffff;
   --surface: #ffffff;
   --surface-muted: #f6f6f7;
+  /**
+   * Sits *above* `surface-muted`, whichever way the theme runs. `surface` is
+   * darker than the muted track in dark mode, so a selected chip painted with
+   * it disappears — this is the one that always reads as raised.
+   */
+  --surface-raised: #ffffff;
+  /** The prototype stage. Near-black in both themes, like a light box. */
+  --stage: #f0f0f2;
   --foreground: #17171a;
   --muted: #6b6b76;
   --border: #e5e5e9;
@@ -19,6 +27,8 @@
     --background: #0b0b0d;
     --surface: #141417;
     --surface-muted: #1a1a1f;
+    --surface-raised: #32323b;
+    --stage: #0f0f11;
     --foreground: #ededf0;
     --muted: #9a9aa6;
     --border: #2a2a31;
@@ -34,6 +44,8 @@
   --color-background: var(--background);
   --color-surface: var(--surface);
   --color-surface-muted: var(--surface-muted);
+  --color-surface-raised: var(--surface-raised);
+  --color-stage: var(--stage);
   --color-foreground: var(--foreground);
   --color-muted: var(--muted);
   --color-border: var(--border);

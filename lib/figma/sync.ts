@@ -2,7 +2,7 @@ import { del, put } from "@vercel/blob";
 import { and, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 
 import { db } from "@/db";
-import { flows, screens, screenTexts } from "@/db/schema";
+import { flowPrototypes, flows, screens, screenTexts } from "@/db/schema";
 import { blobToken, figmaEnv } from "@/lib/env";
 import { FigmaClient } from "./client";
 import { checkDrift } from "./drift";
@@ -10,6 +10,7 @@ import {
   type ExtractedFrame,
   extractFrame,
   figmaUrl,
+  findPrototypeFlows,
   findScreenFrames,
   parseFigmaUrl,
   sha256,
@@ -49,6 +50,7 @@ export interface SyncSummary {
   flowsSynced: number;
   screensRendered: number;
   blobWrites: number;
+  prototypesPublished: number;
   screensArchived: number;
   driftFlagged: number;
   requestCount: number;
@@ -78,6 +80,9 @@ export function formatSyncSummary(summary: SyncSummary): string {
     // Nothing was rendered, so there is no image story to tell — `published`
     // has already explained why.
     if (summary.screensRendered > 0) parts.push(images(summary));
+    // Only worth a sentence when there is one. Most files are never
+    // prototyped, and "0 prototypes" would read as something having failed.
+    if (summary.prototypesPublished > 0) parts.push(prototypes(summary));
   }
 
   if (summary.screensArchived > 0) {
@@ -153,6 +158,12 @@ function images(summary: SyncSummary): string {
   );
 }
 
+function prototypes(summary: SyncSummary): string {
+  return summary.prototypesPublished === 1
+    ? "One prototype is playable on the site."
+    : `${summary.prototypesPublished} prototypes are playable on the site.`;
+}
+
 function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
@@ -161,6 +172,8 @@ export interface FlowPreview {
   fileKey: string;
   name: string;
   changed: boolean;
+  /** Prototype starting points, by the screen each one opens on. */
+  prototypes: { name: string; startsOn: string }[];
   frames: {
     nodeId: string;
     name: string;
@@ -184,6 +197,7 @@ export async function syncProject(
     flowsSynced: 0,
     screensRendered: 0,
     blobWrites: 0,
+    prototypesPublished: 0,
     screensArchived: 0,
     driftFlagged: 0,
     requestCount: 0,
@@ -306,6 +320,12 @@ async function syncFlowFile(
   );
   const frameByNodeId = new Map(found.map(({ frame }) => [frame.id, frame]));
 
+  // Free — the starting points ride along in the tree already fetched above.
+  const prototypeFlows = findPrototypeFlows(fileData.document, env.ignorePattern);
+  if (prototypeFlows.length > 0) {
+    log(`        ${prototypeFlows.length} prototype starting point(s)`);
+  }
+
   // 3. Source links. Absent scope or absent links must not fail the file.
   const sourceByNodeId = new Map<
     string,
@@ -332,6 +352,10 @@ async function syncFlowFile(
       fileKey: file.key,
       name: file.name,
       changed: true,
+      prototypes: prototypeFlows.map((p) => ({
+        name: p.name,
+        startsOn: frameByNodeId.get(p.screenNodeId)?.name.trim() ?? p.screenNodeId,
+      })),
       frames: extracted.map((f) => ({
         nodeId: f.nodeId,
         name: f.name,
@@ -372,6 +396,26 @@ async function syncFlowFile(
       },
     })
     .returning();
+
+  // Replaced wholesale rather than upserted: a starting point that was moved
+  // or unpinned in Figma has to disappear here, and there are only ever a
+  // handful of rows per flow.
+  await db.transaction(async (tx) => {
+    await tx.delete(flowPrototypes).where(eq(flowPrototypes.flowId, flow.id));
+    if (prototypeFlows.length > 0) {
+      await tx.insert(flowPrototypes).values(
+        prototypeFlows.map((p) => ({
+          flowId: flow.id,
+          nodeId: p.nodeId,
+          screenNodeId: p.screenNodeId,
+          name: p.name,
+          section: p.section,
+          position: p.position,
+        })),
+      );
+    }
+  });
+  summary.prototypesPublished += prototypeFlows.length;
 
   // 4/5. Render. Frames that would exceed the 32MP ceiling at 2x are rendered
   // at 1x instead of being allowed to fail.
@@ -462,6 +506,7 @@ async function syncFlowFile(
       sourceNodeId: source?.nodeId ?? null,
       sourceUrl: source?.url ?? null,
       textContent: frame.textContent,
+      navigates: frame.navigates,
       position: frame.position,
       archivedAt: null,
       updatedAt: new Date(),

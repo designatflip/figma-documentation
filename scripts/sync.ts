@@ -89,6 +89,9 @@ async function main() {
     console.log("\n──── DRY RUN — nothing was written ────\n");
     for (const flow of summary.preview) {
       console.log(`▸ ${flow.name}  (${flow.frames.length} screens)`);
+      for (const proto of flow.prototypes) {
+        console.log(`   prototype "${proto.name}" starts on ${proto.startsOn}`);
+      }
       for (const frame of flow.frames) {
         console.log(`   ${frame.section} / ${frame.name}`);
         if (frame.description) {
@@ -117,6 +120,7 @@ async function main() {
     flowsSynced: summary.flowsSynced,
     screensRendered: summary.screensRendered,
     blobWrites: summary.blobWrites,
+    prototypesPublished: summary.prototypesPublished,
     screensArchived: summary.screensArchived,
     driftFlagged: summary.driftFlagged,
     figmaRequests: summary.requestCount,
